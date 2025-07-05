@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>O'quvchilar Baholash Tizimi</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+    <div id="firebaseStatus" class="fixed top-4 right-4 z-50">
+        <div class="flex items-center space-x-2 bg-white rounded-lg shadow-lg px-3 py-2 text-sm">
+            <div id="connectionIndicator" class="w-3 h-3 rounded-full bg-gray-400"></div>
+            <span id="connectionText">Ulanmoqda...</span>
+        </div>
+    </div>
+
+    <div class="container mx-auto px-4 py-8">
+        <div class="max-w-md mx-auto bg-white rounded-xl shadow-2xl overflow-hidden">
+            <div class="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-8 text-center">
+                <i class="fas fa-graduation-cap text-4xl text-white mb-4"></i>
+                <h1 class="text-2xl font-bold text-white">O'quvchilar Baholash Tizimi</h1>
+                <p class="text-blue-100 mt-2">Tizimga kirish</p>
+            </div>
+            
+            <div class="p-6">
+                <div class="mb-6">
+                    <div class="flex bg-gray-100 rounded-lg p-1">
+                        <button id="loginTab" class="flex-1 py-2 px-4 rounded-md bg-blue-600 text-white font-medium transition-all">
+                            Kirish
+                        </button>
+                        <button id="registerTab" class="flex-1 py-2 px-4 rounded-md text-gray-600 font-medium transition-all">
+                            Ro'yxatdan o'tish
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Login Form -->
+                <form id="loginForm" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Email</label>
+                        <input type="email" id="loginEmail" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Parol</label>
+                        <input type="password" id="loginPassword" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                    </div>
+                    <button type="submit" class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition-colors">
+                        Kirish
+                    </button>
+                </form>
+
+                <!-- Register Form -->
+                <form id="registerForm" class="space-y-4 hidden">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Ism Familiya</label>
+                        <input type="text" id="registerName" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Email</label>
+                        <input type="email" id="registerEmail" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Parol</label>
+                        <input type="password" id="registerPassword" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Telegram Username</label>
+                        <input type="text" id="registerTelegram" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="@username" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Referal Kodi (ixtiyoriy)</label>
+                        <input type="text" id="registerReferralCode" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Do'stingizdan olgan kod">
+                        <p class="text-xs text-gray-500 mt-1">Agar sizni kimdir taklif qilgan bo'lsa, uning kodini kiriting</p>
+                    </div>
+                    <button type="submit" class="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 transition-colors">
+                        Ro'yxatdan o'tish
+                    </button>
+                </form>
+
+         
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase Integration -->
+    <script type="module">
+        import { firebaseManager } from './js/firebase.js';
+        
+        // Firebase connection status
+        function updateConnectionStatus() {
+            firebaseManager.updateConnectionStatus();
+        }
+        
+        // Update status every 5 seconds
+        setInterval(updateConnectionStatus, 5000);
+        updateConnectionStatus();
+    </script>
+
+    <script type="module" src="js/auth.js"></script>
+</body>
+</html>
