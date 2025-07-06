@@ -4,6 +4,7 @@ let currentUser = null
 let currentTaskId = null
 let currentTestId = null
 let currentProjectId = null
+let timerIntervals = new Map()
 
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
@@ -54,6 +55,48 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 })
 
+function startTimer(elementId, deadline) {
+  // Clear existing timer if any
+  if (timerIntervals.has(elementId)) {
+    clearInterval(timerIntervals.get(elementId))
+  }
+
+  const timerElement = document.getElementById(elementId)
+  if (!timerElement) return
+
+  const updateTimer = () => {
+    const now = new Date().getTime()
+    const deadlineTime = new Date(deadline).getTime()
+    const timeLeft = deadlineTime - now
+
+    if (timeLeft <= 0) {
+      timerElement.innerHTML = '<span class="text-red-600 font-bold animate-pulse">Muddati o\'tgan!</span>'
+      clearInterval(timerIntervals.get(elementId))
+      timerIntervals.delete(elementId)
+      return
+    }
+
+    const days = Math.floor(timeLeft / (1000 * 60 * 60 * 24))
+    const hours = Math.floor((timeLeft % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+    const minutes = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60))
+    const seconds = Math.floor((timeLeft % (1000 * 60)) / 1000)
+
+    let timeDisplay = ""
+    if (days > 0) {
+      timeDisplay = `${days} kun ${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+    } else {
+      timeDisplay = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+    }
+
+    const colorClass = timeLeft < 3600000 ? 'text-red-600' : timeLeft < 7200000 ? 'text-orange-600' : 'text-blue-600'
+    timerElement.innerHTML = `<span class="${colorClass} font-mono font-bold animate-timer-pulse">${timeDisplay}</span>`
+  }
+
+  updateTimer()
+  const interval = setInterval(updateTimer, 1000)
+  timerIntervals.set(elementId, interval)
+}
+
 async function updateStudentInfo() {
   try {
     const users = await firebaseManager.getArrayData("users")
@@ -66,6 +109,14 @@ async function updateStudentInfo() {
       document.getElementById("walletCoins").textContent = `${user.rating || 0} coin`
       currentUser.rating = user.rating || 0
       currentUser.balance = balance
+
+      // Update mobile stats
+      if (document.getElementById("studentRatingMobile")) {
+        document.getElementById("studentRatingMobile").textContent = `${user.rating || 0} coin`
+      }
+      if (document.getElementById("studentBalanceMobile")) {
+        document.getElementById("studentBalanceMobile").textContent = `${balance.toLocaleString()} so'm`
+      }
 
       // Update color based on balance
       const ratingElement = document.getElementById("studentRating")
@@ -108,28 +159,8 @@ function showTab(tabName) {
     tab.classList.add("hidden")
   })
 
-  // Remove active classes from all buttons
-  document.querySelectorAll('[id$="Tab"], [id$="TabMobile"]').forEach((btn) => {
-    btn.classList.remove("bg-white", "shadow-sm", "text-blue-600", "bg-blue-600", "text-white")
-    btn.classList.add("text-gray-600")
-  })
-
   // Show selected tab
   document.getElementById(tabName + "Content").classList.remove("hidden")
-
-  // Update active button styles
-  const desktopTab = document.getElementById(tabName + "Tab")
-  const mobileTab = document.getElementById(tabName + "TabMobile")
-
-  if (desktopTab) {
-    desktopTab.classList.add("bg-white", "shadow-sm", "text-blue-600")
-    desktopTab.classList.remove("text-gray-600")
-  }
-
-  if (mobileTab) {
-    mobileTab.classList.add("bg-blue-600", "text-white")
-    mobileTab.classList.remove("text-gray-600")
-  }
 }
 
 async function loadTasks() {
@@ -137,10 +168,14 @@ async function loadTasks() {
     const tasks = await firebaseManager.getArrayData("tasks")
     const submissions = await firebaseManager.getArrayData("submissions")
 
-    // Get tasks assigned to user
+    // Get tasks assigned to user or their group
     const myTasks = tasks.filter((task) => {
       if (task.status !== "active") return false
-      return task.assignedTo && task.assignedTo.includes(currentUser.id)
+      if (task.assignedTo && task.assignedTo.includes(currentUser.id)) return true
+      if (task.assignedGroups && currentUser.groupId) {
+        return task.assignedGroups.includes(currentUser.groupId)
+      }
+      return false
     })
 
     const tasksList = document.getElementById("tasksList")
@@ -151,28 +186,31 @@ async function loadTasks() {
       return
     }
 
-    myTasks.forEach((task) => {
+    myTasks.forEach((task, index) => {
       const deadline = new Date(task.deadline)
       const now = new Date()
       const isOverdue = deadline < now
-      const daysLeft = Math.ceil((deadline - now) / (1000 * 60 * 60 * 24))
-
       const mySubmission = submissions.find((s) => s.taskId === task.id && s.studentId === currentUser.id)
 
       const taskElement = document.createElement("div")
       taskElement.className = `border rounded-lg p-4 ${isOverdue ? "border-red-300 bg-red-50" : "border-gray-200"}`
+      
+      const timerId = `timer-${task.id}`
+      
       taskElement.innerHTML = `
         <div class="flex flex-col sm:flex-row justify-between items-start mb-2 gap-4">
           <h3 class="font-semibold text-lg">${task.title}</h3>
           <div class="text-right">
-            <span class="text-xs px-2 py-1 rounded-full ${isOverdue ? "bg-red-100 text-red-600" : "bg-blue-100 text-blue-600"}">
-              ${isOverdue ? "Muddati o'tgan" : `${daysLeft} kun qoldi`}
-            </span>
+            <div id="${timerId}" class="text-sm px-2 py-1 rounded-full bg-blue-100 mb-1">
+              <!-- Timer will be inserted here -->
+            </div>
+            ${mySubmission && mySubmission.status === "approved" ? `<div class="text-sm text-green-600 font-medium">${mySubmission.points || task.reward || 50} coin olindi</div>` : ""}
           </div>
         </div>
         <p class="text-gray-700 mb-3">${task.description}</p>
+        ${task.link ? `<p class="text-sm mb-3"><a href="${task.link}" target="_blank" class="text-blue-600 hover:underline break-all">Vazifa havolasi</a></p>` : ""}
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <span class="text-sm text-gray-500">Muddat: ${deadline.toLocaleDateString("uz-UZ")}</span>
+          <span class="text-sm text-gray-500">Muddat: ${deadline.toLocaleDateString("uz-UZ")} ${deadline.toLocaleTimeString("uz-UZ", {hour: '2-digit', minute: '2-digit'})}</span>
           ${
             mySubmission
               ? `
@@ -204,6 +242,11 @@ async function loadTasks() {
         </div>
       `
       tasksList.appendChild(taskElement)
+
+      // Start timer for this task
+      if (!isOverdue && !mySubmission) {
+        startTimer(timerId, task.deadline)
+      }
     })
   } catch (error) {
     console.error("Vazifalarni yuklashda xatolik:", error)
@@ -285,26 +328,27 @@ async function loadProjects() {
       const deadline = new Date(project.deadline)
       const now = new Date()
       const isOverdue = deadline < now
-      const daysLeft = Math.ceil((deadline - now) / (1000 * 60 * 60 * 24))
-
       const mySubmission = projectSubmissions.find((s) => s.projectId === project.id && s.studentId === currentUser.id)
 
       const projectElement = document.createElement("div")
       projectElement.className = `border rounded-lg p-4 ${isOverdue ? "border-red-300 bg-red-50" : "border-gray-200"}`
+      
+      const timerId = `project-timer-${project.id}`
+      
       projectElement.innerHTML = `
         <div class="flex justify-between items-start mb-2">
           <h3 class="font-semibold text-lg">${project.title}</h3>
           <div class="text-right">
-            <span class="text-xs px-2 py-1 rounded-full ${isOverdue ? "bg-red-100 text-red-600" : "bg-blue-100 text-blue-600"}">
-              ${isOverdue ? "Muddati o'tgan" : `${daysLeft} kun qoldi`}
-            </span>
+            <div id="${timerId}" class="text-sm px-2 py-1 rounded-full bg-blue-100 mb-1">
+              <!-- Timer will be inserted here -->
+            </div>
             <div class="text-sm text-purple-600 font-medium">${project.payment} coin</div>
           </div>
         </div>
         <p class="text-gray-700 mb-3">${project.description}</p>
-        ${project.link ? `<p class="text-sm text-blue-600 mb-3"><a href="${project.link}" target="_blank" class="hover:underline">Loyiha havolasi</a></p>` : ""}
+        ${project.link ? `<p class="text-sm mb-3"><a href="${project.link}" target="_blank" class="text-blue-600 hover:underline break-all">Loyiha havolasi</a></p>` : ""}
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <span class="text-sm text-gray-500">Muddat: ${deadline.toLocaleDateString("uz-UZ")}</span>
+          <span class="text-sm text-gray-500">Muddat: ${deadline.toLocaleDateString("uz-UZ")} ${deadline.toLocaleTimeString("uz-UZ", {hour: '2-digit', minute: '2-digit'})}</span>
           ${
             mySubmission
               ? `
@@ -336,6 +380,11 @@ async function loadProjects() {
         </div>
       `
       projectsList.appendChild(projectElement)
+
+      // Start timer for this project
+      if (!isOverdue && !mySubmission) {
+        startTimer(timerId, project.deadline)
+      }
     })
   } catch (error) {
     console.error("Loyihalarni yuklashda xatolik:", error)
@@ -599,6 +648,7 @@ function openTaskModal(taskId) {
       document.getElementById("htmlCode").value = ""
       document.getElementById("cssCode").value = ""
       document.getElementById("jsCode").value = ""
+      document.getElementById("taskWebsiteUrl").value = ""
       document.getElementById("taskModal").classList.remove("hidden")
       document.getElementById("taskModal").classList.add("flex")
     }
@@ -612,37 +662,72 @@ function closeTaskModal() {
 }
 
 async function submitTask() {
-  if (!currentTaskId) return
-
-  const htmlCode = document.getElementById("htmlCode").value
-  const cssCode = document.getElementById("cssCode").value
-  const jsCode = document.getElementById("jsCode").value
-
-  if (!htmlCode && !cssCode && !jsCode) {
-    alert("Kamida bitta kod maydonini to'ldiring!")
+  if (!currentTaskId) {
+    alert("Vazifa ID topilmadi!")
     return
   }
 
+  const htmlCode = document.getElementById("htmlCode").value.trim()
+  const cssCode = document.getElementById("cssCode").value.trim()
+  const jsCode = document.getElementById("jsCode").value.trim()
+  const websiteUrl = document.getElementById("taskWebsiteUrl").value.trim()
+
+  // Check if at least one field is filled
+  if (!htmlCode && !cssCode && !jsCode && !websiteUrl) {
+    alert("Kamida bitta kod maydonini to'ldiring yoki sayt URL kiriting!")
+    return
+  }
+
+  // Validate URL if provided
+  if (websiteUrl) {
+    try {
+      new URL(websiteUrl)
+    } catch {
+      alert("To'g'ri URL formatini kiriting! (masalan: https://example.com)")
+      return
+    }
+  }
+
   try {
+    // Show loading state
+    const submitButton = document.querySelector('#taskModal button[onclick="submitTask()"]')
+    const originalText = submitButton.textContent
+    submitButton.textContent = "Yuklanmoqda..."
+    submitButton.disabled = true
+
     const submission = {
       taskId: currentTaskId,
       studentId: currentUser.id,
       studentName: currentUser.name,
-      htmlCode,
-      cssCode,
-      jsCode,
+      htmlCode: htmlCode || "",
+      cssCode: cssCode || "",
+      jsCode: jsCode || "",
+      websiteUrl: websiteUrl || "",
       submittedAt: new Date().toISOString(),
       status: "pending",
     }
 
-    await firebaseManager.addToArray("submissions", submission)
-
+    console.log("Submitting task data:", submission)
+    
+    const submissionId = await firebaseManager.addToArray("submissions", submission)
+    console.log("Task submitted with ID:", submissionId)
+    
     alert("Vazifa muvaffaqiyatli topshirildi!")
     closeTaskModal()
     await loadTasks()
+    
+    // Reset button state
+    submitButton.textContent = originalText
+    submitButton.disabled = false
+
   } catch (error) {
     console.error("Vazifa topshirishda xatolik:", error)
-    alert("Vazifa topshirishda xatolik yuz berdi!")
+    alert("Vazifa topshirishda xatolik yuz berdi: " + error.message)
+    
+    // Reset button state
+    const submitButton = document.querySelector('#taskModal button[onclick="submitTask()"]')
+    submitButton.textContent = "Topshirish"
+    submitButton.disabled = false
   }
 }
 

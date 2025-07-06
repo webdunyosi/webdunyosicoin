@@ -83,16 +83,13 @@
         </div>
     </div>
 
-    <!-- Firebase Integration -->
     <script type="module">
         import { firebaseManager } from './js/firebase.js';
         
-        // Firebase connection status
         function updateConnectionStatus() {
             firebaseManager.updateConnectionStatus();
         }
         
-        // Update status every 5 seconds
         setInterval(updateConnectionStatus, 5000);
         updateConnectionStatus();
     </script>

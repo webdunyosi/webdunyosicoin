@@ -31,6 +31,7 @@
                         'pulse-slow': 'pulse 3s infinite',
                         'float': 'float 3s ease-in-out infinite',
                         'glow': 'glow 2s ease-in-out infinite alternate',
+                        'timer-pulse': 'timerPulse 1s ease-in-out infinite',
                     },
                     keyframes: {
                         fadeIn: {
@@ -52,6 +53,10 @@
                         glow: {
                             '0%': { boxShadow: '0 0 5px rgba(59, 130, 246, 0.5)' },
                             '100%': { boxShadow: '0 0 20px rgba(59, 130, 246, 0.8)' },
+                        },
+                        timerPulse: {
+                            '0%, 100%': { opacity: '1' },
+                            '50%': { opacity: '0.7' },
                         }
                     }
                 }
@@ -429,8 +434,9 @@
                                     <h4 class="font-semibold text-gray-900 mb-2">Vazifalar tizimi</h4>
                                     <p class="text-gray-600 mb-3 text-sm sm:text-base">O'quvchilarga vazifalar berish va baholash</p>
                                     <div class="text-xs sm:text-sm text-gray-500 space-y-1">
-                                        <p>• Uyga vazifa: maksimal <span class="font-semibold text-blue-600">100 coin</span></p>
+                                        <p>• Uyga vazifa: admin tomonidan ball beriladi</p>
                                         <p>• Vazifa jarima: <span class="font-semibold text-red-600">20 coin</span></p>
+                                        <p>• Real-time timer va deadline tracking</p>
                                     </div>
                                 </div>
                                 <div class="bg-white rounded-2xl p-4 sm:p-6 shadow-lg border border-gray-100 hover:shadow-xl transition-shadow duration-300">
@@ -451,7 +457,8 @@
                                     <h4 class="font-semibold text-gray-900 mb-2">Freelancer tizim</h4>
                                     <p class="text-gray-600 mb-3 text-sm sm:text-base">Loyihalar orqali daromad topish</p>
                                     <div class="text-xs sm:text-sm text-gray-500 space-y-1">
-                                        <p>• Loyiha: maksimal <span class="font-semibold text-purple-600">10,000 coin</span></p>
+                                        <p>• Loyiha: admin tomonidan belgilanadi</p>
+                                        <p>• Timer bilan deadline tracking</p>
                                     </div>
                                 </div>
                                 <div class="bg-white rounded-2xl p-4 sm:p-6 shadow-lg border border-gray-100 hover:shadow-xl transition-shadow duration-300">
@@ -468,7 +475,7 @@
                             </div>
                             
                             <div class="text-gray-500">
-                                <p>Versiya 2.0 | © 2024 Shoimov Shuxrat</p>
+                                <p>Versiya 4.0 | © 2024 Shoimov Shuxrat</p>
                             </div>
                         </div>
                     </div>
@@ -546,6 +553,11 @@
                         <label class="block text-sm font-medium text-gray-700 mb-2">JavaScript Kodi</label>
                         <textarea id="jsCode" class="w-full h-32 px-4 py-3 border border-gray-300 rounded-xl font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="JavaScript kodingizni kiriting..."></textarea>
                     </div>
+                </div>
+                <div class="mt-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Sayt URL (ixtiyoriy)</label>
+                    <input type="url" id="taskWebsiteUrl" class="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="https://your-website.com">
+                    <p class="text-xs text-gray-500 mt-1">Agar siz sayt yaratgan bo'lsangiz, uning URL manzilini kiriting</p>
                 </div>
             </div>
             <div class="sticky bottom-0 bg-white border-t border-gray-200 p-4 sm:p-6 rounded-b-3xl">
@@ -728,8 +740,12 @@
         function updateMobileStats() {
             const rating = document.getElementById('studentRating').textContent;
             const balance = document.getElementById('studentBalance').textContent;
-            document.getElementById('studentRatingMobile').textContent = rating + ' coin';
-            document.getElementById('studentBalanceMobile').textContent = balance;
+            if (document.getElementById('studentRatingMobile')) {
+                document.getElementById('studentRatingMobile').textContent = rating + ' coin';
+            }
+            if (document.getElementById('studentBalanceMobile')) {
+                document.getElementById('studentBalanceMobile').textContent = balance;
+            }
         }
 
         // Initialize with tasks tab

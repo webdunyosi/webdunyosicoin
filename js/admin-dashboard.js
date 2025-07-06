@@ -14,6 +14,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   try {
     await loadStudents()
+    await loadGroups()
     await loadAdminTasks()
     await loadAdminTests()
     await loadAdminProjects()
@@ -27,6 +28,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     setInterval(async () => {
       try {
         await loadStudents()
+        await loadGroups()
         await loadAdminTasks()
         await loadAdminTests()
         await loadAdminProjects()
@@ -40,6 +42,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }, 30000)
 
+    // Check for expired tasks every minute
+    setInterval(checkExpiredTasks, 60000)
+
     // Set today's date for attendance
     document.getElementById("selectedDate").value = new Date().toISOString().split("T")[0]
   } catch (error) {
@@ -48,39 +53,78 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 })
 
+// Check for expired tasks and apply penalties
+async function checkExpiredTasks() {
+  try {
+    const tasks = await firebaseManager.getArrayData("tasks")
+    const submissions = await firebaseManager.getArrayData("submissions")
+    const users = await firebaseManager.getArrayData("users")
+    
+    const now = new Date()
+    
+    for (const task of tasks) {
+      if (task.status !== "active") continue
+      
+      const deadline = new Date(task.deadline)
+      if (deadline < now && !task.penaltyApplied) {
+        // Apply penalty to students who didn't submit
+        for (const studentId of task.assignedTo || []) {
+          const hasSubmission = submissions.some(s => s.taskId === task.id && s.studentId === studentId)
+          
+          if (!hasSubmission) {
+            const user = users.find(u => u.id === studentId)
+            if (user) {
+              // Apply -20 coin penalty
+              await firebaseManager.updateInArray("users", user.id, {
+                rating: (user.rating || 0) - 20
+              })
+              
+              // Record penalty transaction
+              await firebaseManager.addToArray("paymentTransactions", {
+                studentId: user.id,
+                type: "fine",
+                amount: 20,
+                description: `Vazifa muddati o'tdi: ${task.title}`,
+                timestamp: new Date().toISOString(),
+                relatedId: task.id
+              })
+              
+              // Send notification
+              await firebaseManager.sendNotification([user.id], {
+                type: "task",
+                title: "Vazifa jarima",
+                message: `"${task.title}" vazifasi uchun 20 coin jarima qo'llandi`
+              })
+            }
+          }
+        }
+        
+        // Mark task as penalty applied
+        await firebaseManager.updateInArray("tasks", task.id, {
+          penaltyApplied: true,
+          status: "expired"
+        })
+      }
+    }
+  } catch (error) {
+    console.error("Expired tasks check error:", error)
+  }
+}
+
 function showTab(tabName) {
   // Hide all tabs
   document.querySelectorAll(".tab-content").forEach((tab) => {
     tab.classList.add("hidden")
   })
 
-  // Remove active classes from all buttons
-  document.querySelectorAll('[id$="Tab"], [id$="TabMobile"]').forEach((btn) => {
-    btn.classList.remove("bg-white", "shadow-sm", "text-blue-600", "bg-blue-600", "text-white")
-    btn.classList.add("text-gray-600")
-  })
-
   // Show selected tab
   document.getElementById(tabName + "Content").classList.remove("hidden")
-
-  // Update active button styles
-  const desktopTab = document.getElementById(tabName + "Tab")
-  const mobileTab = document.getElementById(tabName + "TabMobile")
-
-  if (desktopTab) {
-    desktopTab.classList.add("bg-white", "shadow-sm", "text-blue-600")
-    desktopTab.classList.remove("text-gray-600")
-  }
-
-  if (mobileTab) {
-    mobileTab.classList.add("bg-blue-600", "text-white")
-    mobileTab.classList.remove("text-gray-600")
-  }
 }
 
 async function loadStudents() {
   try {
     const students = await firebaseManager.getArrayData("users")
+    const groups = await firebaseManager.getArrayData("groups")
     const studentUsers = students.filter((u) => u.role === "student")
 
     const studentsList = document.getElementById("studentsList")
@@ -93,14 +137,22 @@ async function loadStudents() {
 
     studentUsers.forEach((student) => {
       const balance = Math.floor((student.rating || 0) * 10)
+      const group = groups.find(g => g.id === student.groupId)
+      
       const studentElement = document.createElement("div")
       studentElement.className =
         "border rounded-lg p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4"
       studentElement.innerHTML = `
         <div>
-          <h3 class="font-semibold text-lg">${student.name}</h3>
+          <div class="flex items-center gap-2 mb-2">
+            <h3 class="font-semibold text-lg">${student.name}</h3>
+            <button onclick="editStudentName('${student.id}', '${student.name}')" class="text-blue-600 hover:text-blue-800 text-sm">
+              <i class="fas fa-edit"></i>
+            </button>
+          </div>
           <p class="text-gray-600">${student.email}</p>
           <p class="text-sm text-gray-500">Telegram: ${student.telegram}</p>
+          <p class="text-sm text-gray-500">Guruh: ${group ? group.name : "Tayinlanmagan"}</p>
           <p class="text-sm text-gray-500">Ro'yxatdan o'tgan: ${new Date(student.joinDate).toLocaleDateString("uz-UZ")}</p>
           <p class="text-sm ${balance >= 0 ? "text-green-600" : "text-red-600"}">Hisob: ${balance.toLocaleString()} so'm</p>
         </div>
@@ -108,6 +160,9 @@ async function loadStudents() {
           <div class="text-2xl font-bold ${(student.rating || 0) >= 0 ? "text-blue-600" : "text-red-600"}">${student.rating || 0} coin</div>
           <div class="text-sm text-gray-500">Reyting</div>
           <div class="mt-2 space-x-2">
+            <button onclick="assignToGroup('${student.id}')" class="text-sm bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700">
+              Guruh
+            </button>
             <button onclick="showFineModal('${student.id}')" class="text-sm bg-orange-600 text-white px-2 py-1 rounded hover:bg-orange-700">
               Jarimalar
             </button>
@@ -123,6 +178,51 @@ async function loadStudents() {
     console.error("O'quvchilarni yuklashda xatolik:", error)
     document.getElementById("studentsList").innerHTML =
       '<p class="text-red-500 text-center py-8">Ma\'lumotlarni yuklashda xatolik!</p>'
+  }
+}
+
+async function loadGroups() {
+  try {
+    const groups = await firebaseManager.getArrayData("groups")
+    const users = await firebaseManager.getArrayData("users")
+
+    const groupsList = document.getElementById("groupsList")
+    groupsList.innerHTML = ""
+
+    if (groups.length === 0) {
+      groupsList.innerHTML = '<p class="text-gray-500 text-center py-8">Hozircha guruhlar yo\'q</p>'
+      return
+    }
+
+    groups.forEach((group) => {
+      const groupMembers = users.filter(u => u.groupId === group.id)
+      
+      const groupElement = document.createElement("div")
+      groupElement.className = "border rounded-lg p-4"
+      groupElement.innerHTML = `
+        <div class="flex justify-between items-start mb-3">
+          <div>
+            <h3 class="font-semibold text-lg">${group.name}</h3>
+            <p class="text-gray-600">${group.description || "Tavsif yo'q"}</p>
+            <p class="text-sm text-gray-500">${groupMembers.length} a'zo</p>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="viewGroupMembers('${group.id}')" class="text-sm bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">
+              A'zolar
+            </button>
+            <button onclick="deleteGroup('${group.id}')" class="text-sm bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700">
+              O'chirish
+            </button>
+          </div>
+        </div>
+        <div class="text-sm text-gray-500">
+          Yaratilgan: ${new Date(group.createdAt).toLocaleDateString("uz-UZ")}
+        </div>
+      `
+      groupsList.appendChild(groupElement)
+    })
+  } catch (error) {
+    console.error("Guruhlarni yuklashda xatolik:", error)
   }
 }
 
@@ -150,14 +250,15 @@ async function loadAdminTasks() {
         <div class="flex flex-col sm:flex-row justify-between items-start mb-2 gap-4">
           <h3 class="font-semibold text-lg">${task.title}</h3>
           <div class="text-right">
-            <span class="text-xs px-2 py-1 rounded-full ${isOverdue ? "bg-red-100 text-red-600" : "bg-blue-100 text-blue-600"}">
-              ${isOverdue ? "Muddati o'tgan" : "Faol"}
+            <span class="text-xs px-2 py-1 rounded-full ${isOverdue ? "bg-red-100 text-red-600" : task.status === "expired" ? "bg-gray-100 text-gray-600" : "bg-blue-100 text-blue-600"}">
+              ${task.status === "expired" ? "Tugagan" : isOverdue ? "Muddati o'tgan" : "Faol"}
             </span>
           </div>
         </div>
         <p class="text-gray-700 mb-3">${task.description}</p>
+        ${task.link ? `<p class="text-sm mb-3"><a href="${task.link}" target="_blank" class="text-blue-600 hover:underline">Vazifa havolasi</a></p>` : ""}
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <span class="text-sm text-gray-500">Muddat: ${deadline.toLocaleDateString("uz-UZ")}</span>
+          <span class="text-sm text-gray-500">Muddat: ${deadline.toLocaleDateString("uz-UZ")} ${deadline.toLocaleTimeString("uz-UZ", {hour: '2-digit', minute: '2-digit'})}</span>
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-sm text-gray-600">${taskSubmissions.length} topshirilgan</span>
             <button onclick="viewTaskSubmissions('${task.id}')" class="text-sm bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">
@@ -256,7 +357,7 @@ async function loadAdminProjects() {
         <p class="text-gray-700 mb-3">${project.description}</p>
         ${project.link ? `<p class="text-sm text-blue-600 mb-3"><a href="${project.link}" target="_blank" class="hover:underline">Loyiha havolasi</a></p>` : ""}
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <span class="text-sm text-gray-500">Muddat: ${deadline.toLocaleDateString("uz-UZ")}</span>
+          <span class="text-sm text-gray-500">Muddat: ${deadline.toLocaleDateString("uz-UZ")} ${deadline.toLocaleTimeString("uz-UZ", {hour: '2-digit', minute: '2-digit'})}</span>
           <div class="flex flex-wrap gap-2">
             <span class="text-sm text-gray-600">${submissions.length} topshirilgan</span>
             <button onclick="viewProjectSubmissions('${project.id}')" class="text-sm bg-purple-600 text-white px-3 py-1 rounded hover:bg-purple-700">
@@ -277,6 +378,376 @@ async function loadAdminProjects() {
   }
 }
 
+// Group management functions
+function showCreateGroupModal() {
+  document.getElementById("createGroupModal").classList.remove("hidden")
+  document.getElementById("createGroupModal").classList.add("flex")
+}
+
+function closeCreateGroupModal() {
+  document.getElementById("createGroupModal").classList.add("hidden")
+  document.getElementById("createGroupModal").classList.remove("flex")
+  document.getElementById("createGroupForm").reset()
+}
+
+document.getElementById("createGroupForm").addEventListener("submit", async (e) => {
+  e.preventDefault()
+
+  const name = document.getElementById("groupName").value.trim()
+  const description = document.getElementById("groupDescription").value.trim()
+
+  if (!name) {
+    alert("Guruh nomini kiriting!")
+    return
+  }
+
+  try {
+    const newGroup = {
+      name,
+      description,
+      createdBy: currentUser.id,
+      createdAt: new Date().toISOString()
+    }
+
+    await firebaseManager.addToArray("groups", newGroup)
+    alert("Guruh muvaffaqiyatli yaratildi!")
+    closeCreateGroupModal()
+    await loadGroups()
+  } catch (error) {
+    console.error("Guruh yaratishda xatolik:", error)
+    alert("Guruh yaratishda xatolik yuz berdi!")
+  }
+})
+
+async function assignToGroup(studentId) {
+  try {
+    const groups = await firebaseManager.getArrayData("groups")
+    
+    if (groups.length === 0) {
+      alert("Avval guruh yarating!")
+      return
+    }
+
+    let groupOptions = groups.map(g => `<option value="${g.id}">${g.name}</option>`).join("")
+    groupOptions = `<option value="">Guruhdan chiqarish</option>` + groupOptions
+
+    const modal = document.createElement("div")
+    modal.className = "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+    modal.innerHTML = `
+      <div class="bg-white rounded-lg w-full max-w-md">
+        <div class="p-6">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-bold">Guruhga tayinlash</h3>
+            <button onclick="this.closest('.fixed').remove()" class="text-gray-500 hover:text-gray-700">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+          <div class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium mb-2">Guruhni tanlang</label>
+              <select id="groupSelect" class="w-full px-3 py-2 border rounded-md">
+                ${groupOptions}
+              </select>
+            </div>
+            <div class="flex justify-end space-x-2">
+              <button onclick="this.closest('.fixed').remove()" class="px-4 py-2 text-gray-600 border rounded-md hover:bg-gray-50">Bekor qilish</button>
+              <button onclick="confirmGroupAssignment('${studentId}'); this.closest('.fixed').remove()" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">Tayinlash</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `
+    document.body.appendChild(modal)
+  } catch (error) {
+    console.error("Guruh tayinlash modalini ochishda xatolik:", error)
+  }
+}
+
+async function confirmGroupAssignment(studentId) {
+  const groupId = document.getElementById("groupSelect").value
+
+  try {
+    const updateData = groupId ? { groupId } : { groupId: null }
+    await firebaseManager.updateInArray("users", studentId, updateData)
+    
+    alert(groupId ? "O'quvchi guruhga tayinlandi!" : "O'quvchi guruhdan chiqarildi!")
+    await loadStudents()
+  } catch (error) {
+    console.error("Guruh tayinlashda xatolik:", error)
+    alert("Guruh tayinlashda xatolik yuz berdi!")
+  }
+}
+
+async function editStudentName(studentId, currentName) {
+  const newName = prompt("Yangi ismni kiriting:", currentName)
+  
+  if (newName && newName.trim() !== currentName) {
+    try {
+      await firebaseManager.updateInArray("users", studentId, {
+        name: newName.trim()
+      })
+      alert("Ism muvaffaqiyatli o'zgartirildi!")
+      await loadStudents()
+    } catch (error) {
+      console.error("Ismni o'zgartirishda xatolik:", error)
+      alert("Ismni o'zgartirishda xatolik yuz berdi!")
+    }
+  }
+}
+
+async function viewGroupMembers(groupId) {
+  try {
+    const users = await firebaseManager.getArrayData("users")
+    const groups = await firebaseManager.getArrayData("groups")
+    
+    const group = groups.find(g => g.id === groupId)
+    const members = users.filter(u => u.groupId === groupId)
+
+    let membersHtml = '<div class="space-y-2">'
+    if (members.length === 0) {
+      membersHtml += '<p class="text-gray-500 text-center py-4">Bu guruhda hozircha a\'zolar yo\'q</p>'
+    } else {
+      members.forEach(member => {
+        membersHtml += `
+          <div class="flex justify-between items-center p-2 border rounded">
+            <div>
+              <div class="font-medium">${member.name}</div>
+              <div class="text-sm text-gray-600">${member.email}</div>
+            </div>
+            <div class="text-sm font-bold ${(member.rating || 0) >= 0 ? 'text-blue-600' : 'text-red-600'}">
+              ${member.rating || 0} coin
+            </div>
+          </div>
+        `
+      })
+    }
+    membersHtml += '</div>'
+
+    const modal = document.createElement("div")
+    modal.className = "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+    modal.innerHTML = `
+      <div class="bg-white rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div class="flex justify-between items-center p-6 border-b">
+          <h3 class="text-xl font-bold">${group?.name || "Guruh"} a'zolari</h3>
+          <button onclick="this.closest('.fixed').remove()" class="text-gray-500 hover:text-gray-700">
+            <i class="fas fa-times text-xl"></i>
+          </button>
+        </div>
+        <div class="p-6">
+          ${membersHtml}
+        </div>
+      </div>
+    `
+    document.body.appendChild(modal)
+  } catch (error) {
+    console.error("Guruh a'zolarini ko'rishda xatolik:", error)
+  }
+}
+
+async function deleteGroup(groupId) {
+  if (confirm("Bu guruhni o'chirishni tasdiqlaysizmi? Guruh a'zolari guruhdan chiqariladi.")) {
+    try {
+      // Remove group assignment from all members
+      const users = await firebaseManager.getArrayData("users")
+      const groupMembers = users.filter(u => u.groupId === groupId)
+      
+      for (const member of groupMembers) {
+        await firebaseManager.updateInArray("users", member.id, { groupId: null })
+      }
+      
+      // Delete the group
+      await firebaseManager.removeFromArray("groups", groupId)
+      
+      alert("Guruh muvaffaqiyatli o'chirildi!")
+      await loadGroups()
+      await loadStudents()
+    } catch (error) {
+      console.error("Guruhni o'chirishda xatolik:", error)
+      alert("Guruhni o'chirishda xatolik yuz berdi!")
+    }
+  }
+}
+
+// Task management functions
+function showCreateTaskModal() {
+  loadStudentCheckboxes()
+  loadGroupOptions()
+  document.getElementById("createTaskModal").classList.remove("hidden")
+  document.getElementById("createTaskModal").classList.add("flex")
+}
+
+function closeCreateTaskModal() {
+  document.getElementById("createTaskModal").classList.add("hidden")
+  document.getElementById("createTaskModal").classList.remove("flex")
+  document.getElementById("createTaskForm").reset()
+}
+
+async function loadStudentCheckboxes() {
+  try {
+    const users = await firebaseManager.getArrayData("users")
+    const students = users.filter((u) => u.role === "student")
+
+    const container = document.getElementById("taskStudentCheckboxes")
+    container.innerHTML = ""
+
+    students.forEach((student) => {
+      const checkbox = document.createElement("label")
+      checkbox.className = "flex items-center space-x-2 p-1 cursor-pointer"
+      checkbox.innerHTML = `
+        <input type="checkbox" value="${student.id}" class="text-blue-600">
+        <span class="text-sm">${student.name} (${student.email})</span>
+      `
+      container.appendChild(checkbox)
+    })
+  } catch (error) {
+    console.error("O'quvchilar ro'yxatini yuklashda xatolik:", error)
+  }
+}
+
+async function loadGroupOptions() {
+  try {
+    const groups = await firebaseManager.getArrayData("groups")
+    
+    const taskGroupSelect = document.getElementById("taskGroupSelect")
+    const projectGroupSelect = document.getElementById("projectGroupSelect")
+    
+    const groupOptions = groups.map(g => `<option value="${g.id}">${g.name}</option>`).join("")
+    
+    if (taskGroupSelect) {
+      taskGroupSelect.innerHTML = groupOptions
+    }
+    if (projectGroupSelect) {
+      projectGroupSelect.innerHTML = groupOptions
+    }
+  } catch (error) {
+    console.error("Guruh variantlarini yuklashda xatolik:", error)
+  }
+}
+
+function toggleTaskAssignmentOptions() {
+  const type = document.getElementById("taskAssignmentType").value
+  const individualOptions = document.getElementById("taskIndividualOptions")
+  const groupOptions = document.getElementById("taskGroupOptions")
+  
+  if (type === "individual") {
+    individualOptions.classList.remove("hidden")
+    groupOptions.classList.add("hidden")
+  } else if (type === "group") {
+    individualOptions.classList.add("hidden")
+    groupOptions.classList.remove("hidden")
+  } else {
+    individualOptions.classList.add("hidden")
+    groupOptions.classList.add("hidden")
+  }
+}
+
+function toggleProjectAssignmentOptions() {
+  const type = document.getElementById("projectAssignmentType").value
+  const individualOptions = document.getElementById("projectIndividualOptions")
+  const groupOptions = document.getElementById("projectGroupOptions")
+  
+  if (type === "individual") {
+    individualOptions.classList.remove("hidden")
+    groupOptions.classList.add("hidden")
+  } else if (type === "group") {
+    individualOptions.classList.add("hidden")
+    groupOptions.classList.remove("hidden")
+  } else {
+    individualOptions.classList.add("hidden")
+    groupOptions.classList.add("hidden")
+  }
+}
+
+document.getElementById("createTaskForm").addEventListener("submit", async (e) => {
+  e.preventDefault()
+
+  const title = document.getElementById("taskTitle").value.trim()
+  const description = document.getElementById("taskDescription").value.trim()
+  const link = document.getElementById("taskLink").value.trim()
+  const deadlineDays = Number.parseInt(document.getElementById("taskDeadlineDays").value) || 0
+  const deadlineHours = Number.parseInt(document.getElementById("taskDeadlineHours").value) || 0
+  const deadlineMinutes = Number.parseInt(document.getElementById("taskDeadlineMinutes").value) || 0
+  const assignmentType = document.getElementById("taskAssignmentType").value
+
+  if (!title || !description) {
+    alert("Vazifa nomi va tavsifini kiriting!")
+    return
+  }
+
+  if (deadlineDays === 0 && deadlineHours === 0 && deadlineMinutes === 0) {
+    alert("Muddat belgilang!")
+    return
+  }
+
+  let assignedTo = []
+
+  if (assignmentType === "individual") {
+    assignedTo = Array.from(document.querySelectorAll("#taskStudentCheckboxes input:checked")).map((cb) => cb.value)
+    if (assignedTo.length === 0) {
+      alert("Kamida bitta o'quvchini tanlang!")
+      return
+    }
+  } else if (assignmentType === "group") {
+    const groupId = document.getElementById("taskGroupSelect").value
+    if (!groupId) {
+      alert("Guruhni tanlang!")
+      return
+    }
+    
+    // Get all students in the selected group
+    const users = await firebaseManager.getArrayData("users")
+    assignedTo = users.filter(u => u.groupId === groupId).map(u => u.id)
+    
+    if (assignedTo.length === 0) {
+      alert("Tanlangan guruhda o'quvchilar yo'q!")
+      return
+    }
+  } else if (assignmentType === "all") {
+    const users = await firebaseManager.getArrayData("users")
+    assignedTo = users.filter(u => u.role === "student").map(u => u.id)
+    
+    if (assignedTo.length === 0) {
+      alert("Tizimda o'quvchilar yo'q!")
+      return
+    }
+  }
+
+  try {
+    // Calculate deadline
+    const totalMinutes = (deadlineDays * 24 * 60) + (deadlineHours * 60) + deadlineMinutes
+    const deadline = new Date(Date.now() + totalMinutes * 60 * 1000)
+
+    const newTask = {
+      title,
+      description,
+      link,
+      deadline: deadline.toISOString(),
+      assignedTo,
+      createdBy: currentUser.id,
+      createdAt: new Date().toISOString(),
+      status: "active",
+      penaltyApplied: false
+    }
+
+    await firebaseManager.addToArray("tasks", newTask)
+
+    // Send notifications to assigned students
+    await firebaseManager.sendNotification(assignedTo, {
+      type: "task",
+      title: "Yangi vazifa",
+      message: `"${title}" vazifasi sizga tayinlandi`
+    })
+
+    alert("Vazifa muvaffaqiyatli yaratildi!")
+    closeCreateTaskModal()
+    await loadAdminTasks()
+  } catch (error) {
+    console.error("Vazifa yaratishda xatolik:", error)
+    alert("Vazifa yaratishda xatolik yuz berdi!")
+  }
+})
+
+// Continue with other functions...
 async function loadResults() {
   try {
     // Load leaderboard
@@ -657,326 +1128,6 @@ document.getElementById("chatInput").addEventListener("keypress", (e) => {
   }
 })
 
-// Task management functions
-function showCreateTaskModal() {
-  loadStudentCheckboxes()
-  document.getElementById("createTaskModal").classList.remove("hidden")
-  document.getElementById("createTaskModal").classList.add("flex")
-}
-
-function closeCreateTaskModal() {
-  document.getElementById("createTaskModal").classList.add("hidden")
-  document.getElementById("createTaskModal").classList.remove("flex")
-  document.getElementById("createTaskForm").reset()
-}
-
-async function loadStudentCheckboxes() {
-  try {
-    const users = await firebaseManager.getArrayData("users")
-    const students = users.filter((u) => u.role === "student")
-
-    const container = document.getElementById("studentCheckboxes")
-    container.innerHTML = ""
-
-    students.forEach((student) => {
-      const checkbox = document.createElement("label")
-      checkbox.className = "flex items-center space-x-2 p-1 cursor-pointer"
-      checkbox.innerHTML = `
-        <input type="checkbox" value="${student.id}" class="text-blue-600">
-        <span class="text-sm">${student.name} (${student.email})</span>
-      `
-      container.appendChild(checkbox)
-    })
-  } catch (error) {
-    console.error("O'quvchilar ro'yxatini yuklashda xatolik:", error)
-  }
-}
-
-async function loadProjectStudentCheckboxes() {
-  try {
-    const users = await firebaseManager.getArrayData("users")
-    const students = users.filter((u) => u.role === "student")
-
-    const container = document.getElementById("projectStudentCheckboxes")
-    container.innerHTML = ""
-
-    students.forEach((student) => {
-      const checkbox = document.createElement("label")
-      checkbox.className = "flex items-center space-x-2 p-1 cursor-pointer"
-      checkbox.innerHTML = `
-        <input type="checkbox" value="${student.id}" class="text-blue-600">
-        <span class="text-sm">${student.name} (${student.email})</span>
-      `
-      container.appendChild(checkbox)
-    })
-  } catch (error) {
-    console.error("O'quvchilar ro'yxatini yuklashda xatolik:", error)
-  }
-}
-
-document.getElementById("createTaskForm").addEventListener("submit", async (e) => {
-  e.preventDefault()
-
-  const title = document.getElementById("taskTitle").value
-  const description = document.getElementById("taskDescription").value
-  const deadline = Number.parseInt(document.getElementById("taskDeadline").value)
-
-  const assignedTo = Array.from(document.querySelectorAll("#studentCheckboxes input:checked")).map((cb) => cb.value)
-
-  if (assignedTo.length === 0) {
-    alert("Kamida bitta o'quvchini tanlang!")
-    return
-  }
-
-  try {
-    const newTask = {
-      title,
-      description,
-      deadline: new Date(Date.now() + deadline * 24 * 60 * 60 * 1000).toISOString(),
-      assignedTo,
-      createdBy: currentUser.id,
-      createdAt: new Date().toISOString(),
-      status: "active",
-    }
-
-    await firebaseManager.addToArray("tasks", newTask)
-
-    // Send notifications to assigned students
-    await firebaseManager.sendNotification(assignedTo, {
-      type: "task",
-      title: "Yangi vazifa",
-      message: `"${title}" vazifasi sizga tayinlandi`,
-    })
-
-    alert("Vazifa muvaffaqiyatli yaratildi!")
-    closeCreateTaskModal()
-    await loadAdminTasks()
-  } catch (error) {
-    console.error("Vazifa yaratishda xatolik:", error)
-    alert("Vazifa yaratishda xatolik yuz berdi!")
-  }
-})
-
-// Test management
-function showCreateTestModal() {
-  questionCount = 0
-  document.getElementById("questionsContainer").innerHTML = ""
-  document.getElementById("createTestModal").classList.remove("hidden")
-  document.getElementById("createTestModal").classList.add("flex")
-
-  // Add first question automatically
-  addQuestion()
-}
-
-function closeCreateTestModal() {
-  document.getElementById("createTestModal").classList.add("hidden")
-  document.getElementById("createTestModal").classList.remove("flex")
-  document.getElementById("createTestForm").reset()
-  questionCount = 0
-}
-
-function addQuestion() {
-  const questionsContainer = document.getElementById("questionsContainer")
-  const questionIndex = questionsContainer.children.length
-
-  const questionDiv = document.createElement("div")
-  questionDiv.className = "border rounded-lg p-4 question-item"
-  questionDiv.innerHTML = `
-    <div class="flex justify-between items-center mb-3">
-      <h4 class="font-medium">Savol ${questionIndex + 1}</h4>
-      <button type="button" onclick="removeQuestion(this)" class="text-red-600 hover:text-red-800">
-        <i class="fas fa-trash"></i>
-      </button>
-    </div>
-    <div class="space-y-3">
-      <input type="text" placeholder="Savol matni" class="w-full px-3 py-2 border rounded-md question-text" required>
-      <div class="grid grid-cols-2 gap-2">
-        <input type="text" placeholder="Variant A" class="px-3 py-2 border rounded-md option-input" required>
-        <input type="text" placeholder="Variant B" class="px-3 py-2 border rounded-md option-input" required>
-        <input type="text" placeholder="Variant C" class="px-3 py-2 border rounded-md option-input" required>
-        <input type="text" placeholder="Variant D" class="px-3 py-2 border rounded-md option-input" required>
-      </div>
-      <div>
-        <label class="block text-sm font-medium mb-2">To'g'ri javob:</label>
-        <select class="w-full px-3 py-2 border rounded-md correct-answer" required>
-          <option value="">Tanlang...</option>
-          <option value="0">Variant A</option>
-          <option value="1">Variant B</option>
-          <option value="2">Variant C</option>
-          <option value="3">Variant D</option>
-        </select>
-      </div>
-    </div>
-  `
-
-  questionsContainer.appendChild(questionDiv)
-  questionCount++
-}
-
-function removeQuestion(button) {
-  const questionDiv = button.closest(".question-item")
-  questionDiv.remove()
-  questionCount--
-
-  // Update question numbers
-  const questions = document.querySelectorAll(".question-item")
-  questions.forEach((question, index) => {
-    const header = question.querySelector("h4")
-    header.textContent = `Savol ${index + 1}`
-  })
-}
-
-document.getElementById("createTestForm").addEventListener("submit", async (e) => {
-  e.preventDefault()
-
-  const title = document.getElementById("testTitle").value.trim()
-  const description = document.getElementById("testDescription").value.trim()
-
-  if (!title || !description) {
-    alert("Test nomi va tavsifini kiriting!")
-    return
-  }
-
-  const questions = []
-  const questionItems = document.querySelectorAll("#questionsContainer .question-item")
-
-  if (questionItems.length === 0) {
-    alert("Kamida bitta savol qo'shing!")
-    return
-  }
-
-  let hasError = false
-  questionItems.forEach((questionDiv, index) => {
-    const questionText = questionDiv.querySelector(".question-text").value.trim()
-    const optionInputs = questionDiv.querySelectorAll(".option-input")
-    const correctAnswerSelect = questionDiv.querySelector(".correct-answer")
-
-    if (!questionText) {
-      alert(`${index + 1}-savol matni bo'sh!`)
-      hasError = true
-      return
-    }
-
-    const options = []
-    optionInputs.forEach((input) => {
-      const value = input.value.trim()
-      if (!value) {
-        alert(`${index + 1}-savolda barcha variantlarni to'ldiring!`)
-        hasError = true
-        return
-      }
-      options.push(value)
-    })
-
-    const correctAnswer = correctAnswerSelect.value
-    if (correctAnswer === "") {
-      alert(`${index + 1}-savol uchun to'g'ri javobni tanlang!`)
-      hasError = true
-      return
-    }
-
-    if (!hasError) {
-      questions.push({
-        question: questionText,
-        options: options,
-        correctAnswer: Number.parseInt(correctAnswer),
-      })
-    }
-  })
-
-  if (hasError) return
-
-  try {
-    const newTest = {
-      title,
-      description,
-      questions,
-      createdBy: currentUser.id,
-      createdAt: new Date().toISOString(),
-    }
-
-    await firebaseManager.addToArray("tests", newTest)
-
-    // Send notifications to all students
-    const users = await firebaseManager.getArrayData("users")
-    const studentIds = users.filter((u) => u.role === "student").map((u) => u.id)
-    await firebaseManager.sendNotification(studentIds, {
-      type: "test",
-      title: "Yangi test",
-      message: `"${title}" testi qo'shildi`,
-    })
-
-    alert("Test muvaffaqiyatli yaratildi!")
-    closeCreateTestModal()
-    await loadAdminTests()
-  } catch (error) {
-    console.error("Test yaratishda xatolik:", error)
-    alert("Test yaratishda xatolik yuz berdi!")
-  }
-})
-
-// Project management
-function showCreateProjectModal() {
-  loadProjectStudentCheckboxes()
-  document.getElementById("createProjectModal").classList.remove("hidden")
-  document.getElementById("createProjectModal").classList.add("flex")
-}
-
-function closeCreateProjectModal() {
-  document.getElementById("createProjectModal").classList.add("hidden")
-  document.getElementById("createProjectModal").classList.remove("flex")
-  document.getElementById("createProjectForm").reset()
-}
-
-document.getElementById("createProjectForm").addEventListener("submit", async (e) => {
-  e.preventDefault()
-
-  const title = document.getElementById("projectTitle").value
-  const description = document.getElementById("projectDescription").value
-  const link = document.getElementById("projectLink").value
-  const deadline = Number.parseInt(document.getElementById("projectDeadline").value)
-  const payment = Number.parseInt(document.getElementById("projectPayment").value)
-
-  const assignedTo = Array.from(document.querySelectorAll("#projectStudentCheckboxes input:checked")).map(
-    (cb) => cb.value,
-  )
-
-  if (assignedTo.length === 0) {
-    alert("Kamida bitta o'quvchini tanlang!")
-    return
-  }
-
-  try {
-    const newProject = {
-      title,
-      description,
-      link,
-      deadline: new Date(Date.now() + deadline * 24 * 60 * 60 * 1000).toISOString(),
-      payment,
-      assignedTo,
-      createdBy: currentUser.id,
-      createdAt: new Date().toISOString(),
-      status: "active",
-    }
-
-    await firebaseManager.addToArray("projects", newProject)
-
-    // Send notifications to assigned students
-    await firebaseManager.sendNotification(assignedTo, {
-      type: "project",
-      title: "Yangi loyiha",
-      message: `"${title}" loyihasi sizga tayinlandi (${payment} coin)`,
-    })
-
-    alert("Loyiha muvaffaqiyatli yaratildi!")
-    closeCreateProjectModal()
-    await loadAdminProjects()
-  } catch (error) {
-    console.error("Loyiha yaratishda xatolik:", error)
-    alert("Loyiha yaratishda xatolik yuz berdi!")
-  }
-})
-
 // Attendance functions
 async function markAttendance(studentId, status) {
   try {
@@ -1195,32 +1346,6 @@ function closeAttendanceConfirmModal() {
   document.getElementById("attendanceConfirmModal").classList.add("hidden")
   document.getElementById("attendanceConfirmModal").classList.remove("flex")
   document.getElementById("attendancePassword").value = ""
-}
-
-async function confirmAttendanceAction() {
-  const password = document.getElementById("attendancePassword").value
-
-  if (password !== currentUser.password) {
-    alert("Parol noto'g'ri!")
-    return
-  }
-
-  try {
-    // Lock attendance for the selected date
-    const selectedDate = document.getElementById("selectedDate").value
-    const lockedDates = (await firebaseManager.getData("lockedAttendanceDates")) || []
-
-    if (!lockedDates.includes(selectedDate)) {
-      lockedDates.push(selectedDate)
-      await firebaseManager.saveData("lockedAttendanceDates", lockedDates)
-    }
-
-    alert("Davomat tasdiqlandi va o'zgartirib bo'lmaydi!")
-    closeAttendanceConfirmModal()
-  } catch (error) {
-    console.error("Davomatni tasdiqlashda xatolik:", error)
-    alert("Davomatni tasdiqlashda xatolik yuz berdi!")
-  }
 }
 
 // Fine management modal
@@ -1486,6 +1611,12 @@ async function viewTaskSubmissions(taskId) {
                 : ""
             }
           </div>
+          ${submission.image ? `
+            <div class="mb-4">
+              <h5 class="font-medium mb-2">Yuklangan rasm:</h5>
+              <img src="${submission.image}" class="max-w-md rounded-lg border" alt="Vazifa rasmi">
+            </div>
+          ` : ""}
           <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <h5 class="font-medium mb-1">HTML:</h5>
@@ -1534,6 +1665,63 @@ async function viewTaskSubmissions(taskId) {
   } catch (error) {
     console.error("Vazifa topshiriqlarini ko'rishda xatolik:", error)
     alert("Vazifa topshiriqlarini ko'rishda xatolik yuz berdi!")
+  }
+}
+
+async function reviewSubmission(submissionId, status, points = 0, feedback = "") {
+  try {
+    const submissions = await firebaseManager.getArrayData("submissions")
+    const submission = submissions.find((s) => s.id === submissionId)
+
+    if (!submission) return
+
+    const updates = {
+      status,
+      reviewedBy: currentUser.id,
+      reviewedAt: new Date().toISOString(),
+      points: Number.parseInt(points) || 0
+    }
+
+    if (feedback) {
+      updates.feedback = feedback
+    }
+
+    await firebaseManager.updateInArray("submissions", submissionId, updates)
+
+    // Update student rating if approved
+    if (status === "approved" && points > 0) {
+      const users = await firebaseManager.getArrayData("users")
+      const user = users.find((u) => u.id === submission.studentId)
+      if (user) {
+        await firebaseManager.updateInArray("users", user.id, {
+          rating: (user.rating || 0) + Number.parseInt(points),
+        })
+
+        // Record transaction
+        await firebaseManager.addToArray("paymentTransactions", {
+          studentId: submission.studentId,
+          type: "earning",
+          amount: Number.parseInt(points),
+          description: `Vazifa bajarildi: ${points} ball`,
+          timestamp: new Date().toISOString(),
+          relatedId: submissionId,
+        })
+
+        // Send notification
+        await firebaseManager.sendNotification([submission.studentId], {
+          type: "task",
+          title: status === "approved" ? "Vazifa tasdiqlandi" : "Vazifa rad etildi",
+          message: status === "approved" ? `${points} coin olasiz` : feedback || "Vazifa rad etildi",
+        })
+      }
+    }
+
+    alert(`Vazifa ${status === "approved" ? "tasdiqlandi" : "rad etildi"}!`)
+    await loadAdminTasks()
+    await loadStudents()
+  } catch (error) {
+    console.error("Vazifa topshiriqni ko'rib chiqishda xatolik:", error)
+    alert("Vazifa topshiriqni ko'rib chiqishda xatolik yuz berdi!")
   }
 }
 
@@ -1673,62 +1861,6 @@ async function viewProjectSubmissions(projectId) {
   } catch (error) {
     console.error("Loyiha topshiriqlarini ko'rishda xatolik:", error)
     alert("Loyiha topshiriqlarini ko'rishda xatolik yuz berdi!")
-  }
-}
-
-async function reviewSubmission(submissionId, status, points = 0, feedback = "") {
-  try {
-    const submissions = await firebaseManager.getArrayData("submissions")
-    const submission = submissions.find((s) => s.id === submissionId)
-
-    if (!submission) return
-
-    const updates = {
-      status,
-      reviewedBy: currentUser.id,
-      reviewedAt: new Date().toISOString(),
-    }
-
-    if (feedback) {
-      updates.feedback = feedback
-    }
-
-    await firebaseManager.updateInArray("submissions", submissionId, updates)
-
-    // Update student rating if approved
-    if (status === "approved" && points > 0) {
-      const users = await firebaseManager.getArrayData("users")
-      const user = users.find((u) => u.id === submission.studentId)
-      if (user) {
-        await firebaseManager.updateInArray("users", user.id, {
-          rating: (user.rating || 0) + Number.parseInt(points),
-        })
-
-        // Record transaction
-        await firebaseManager.addToArray("paymentTransactions", {
-          studentId: submission.studentId,
-          type: "earning",
-          amount: Number.parseInt(points),
-          description: `Vazifa bajarildi`,
-          timestamp: new Date().toISOString(),
-          relatedId: submissionId,
-        })
-
-        // Send notification
-        await firebaseManager.sendNotification([submission.studentId], {
-          type: "task",
-          title: status === "approved" ? "Vazifa tasdiqlandi" : "Vazifa rad etildi",
-          message: status === "approved" ? `${points} coin olasiz` : feedback || "Vazifa rad etildi",
-        })
-      }
-    }
-
-    alert(`Vazifa ${status === "approved" ? "tasdiqlandi" : "rad etildi"}!`)
-    await loadAdminTasks()
-    await loadStudents()
-  } catch (error) {
-    console.error("Vazifa topshiriqni ko'rib chiqishda xatolik:", error)
-    alert("Vazifa topshiriqni ko'rib chiqishda xatolik yuz berdi!")
   }
 }
 
@@ -1942,21 +2074,321 @@ document.addEventListener("change", (e) => {
   }
 })
 
+// Test management
+function showCreateTestModal() {
+  questionCount = 0
+  document.getElementById("questionsContainer").innerHTML = ""
+  document.getElementById("createTestModal").classList.remove("hidden")
+  document.getElementById("createTestModal").classList.add("flex")
+
+  // Add first question automatically
+  addQuestion()
+}
+
+function closeCreateTestModal() {
+  document.getElementById("createTestModal").classList.add("hidden")
+  document.getElementById("createTestModal").classList.remove("flex")
+  document.getElementById("createTestForm").reset()
+  questionCount = 0
+}
+
+function addQuestion() {
+  const questionsContainer = document.getElementById("questionsContainer")
+  const questionIndex = questionsContainer.children.length
+
+  const questionDiv = document.createElement("div")
+  questionDiv.className = "border rounded-lg p-4 question-item"
+  questionDiv.innerHTML = `
+    <div class="flex justify-between items-center mb-3">
+      <h4 class="font-medium">Savol ${questionIndex + 1}</h4>
+      <button type="button" onclick="removeQuestion(this)" class="text-red-600 hover:text-red-800">
+        <i class="fas fa-trash"></i>
+      </button>
+    </div>
+    <div class="space-y-3">
+      <input type="text" placeholder="Savol matni" class="w-full px-3 py-2 border rounded-md question-text" required>
+      <div class="grid grid-cols-2 gap-2">
+        <input type="text" placeholder="Variant A" class="px-3 py-2 border rounded-md option-input" required>
+        <input type="text" placeholder="Variant B" class="px-3 py-2 border rounded-md option-input" required>
+        <input type="text" placeholder="Variant C" class="px-3 py-2 border rounded-md option-input" required>
+        <input type="text" placeholder="Variant D" class="px-3 py-2 border rounded-md option-input" required>
+      </div>
+      <div>
+        <label class="block text-sm font-medium mb-2">To'g'ri javob:</label>
+        <select class="w-full px-3 py-2 border rounded-md correct-answer" required>
+          <option value="">Tanlang...</option>
+          <option value="0">Variant A</option>
+          <option value="1">Variant B</option>
+          <option value="2">Variant C</option>
+          <option value="3">Variant D</option>
+        </select>
+      </div>
+    </div>
+  `
+
+  questionsContainer.appendChild(questionDiv)
+  questionCount++
+}
+
+function removeQuestion(button) {
+  const questionDiv = button.closest(".question-item")
+  questionDiv.remove()
+  questionCount--
+
+  // Update question numbers
+  const questions = document.querySelectorAll(".question-item")
+  questions.forEach((question, index) => {
+    const header = question.querySelector("h4")
+    header.textContent = `Savol ${index + 1}`
+  })
+}
+
+document.getElementById("createTestForm").addEventListener("submit", async (e) => {
+  e.preventDefault()
+
+  const title = document.getElementById("testTitle").value.trim()
+  const description = document.getElementById("testDescription").value.trim()
+
+  if (!title || !description) {
+    alert("Test nomi va tavsifini kiriting!")
+    return
+  }
+
+  const questions = []
+  const questionItems = document.querySelectorAll("#questionsContainer .question-item")
+
+  if (questionItems.length === 0) {
+    alert("Kamida bitta savol qo'shing!")
+    return
+  }
+
+  let hasError = false
+  questionItems.forEach((questionDiv, index) => {
+    const questionText = questionDiv.querySelector(".question-text").value.trim()
+    const optionInputs = questionDiv.querySelectorAll(".option-input")
+    const correctAnswerSelect = questionDiv.querySelector(".correct-answer")
+
+    if (!questionText) {
+      alert(`${index + 1}-savol matni bo'sh!`)
+      hasError = true
+      return
+    }
+
+    const options = []
+    optionInputs.forEach((input) => {
+      const value = input.value.trim()
+      if (!value) {
+        alert(`${index + 1}-savolda barcha variantlarni to'ldiring!`)
+        hasError = true
+        return
+      }
+      options.push(value)
+    })
+
+    const correctAnswer = correctAnswerSelect.value
+    if (correctAnswer === "") {
+      alert(`${index + 1}-savol uchun to'g'ri javobni tanlang!`)
+      hasError = true
+      return
+    }
+
+    if (!hasError) {
+      questions.push({
+        question: questionText,
+        options: options,
+        correctAnswer: Number.parseInt(correctAnswer),
+      })
+    }
+  })
+
+  if (hasError) return
+
+  try {
+    const newTest = {
+      title,
+      description,
+      questions,
+      createdBy: currentUser.id,
+      createdAt: new Date().toISOString(),
+    }
+
+    await firebaseManager.addToArray("tests", newTest)
+
+    // Send notifications to all students
+    const users = await firebaseManager.getArrayData("users")
+    const studentIds = users.filter((u) => u.role === "student").map((u) => u.id)
+    await firebaseManager.sendNotification(studentIds, {
+      type: "test",
+      title: "Yangi test",
+      message: `"${title}" testi qo'shildi`,
+    })
+
+    alert("Test muvaffaqiyatli yaratildi!")
+    closeCreateTestModal()
+    await loadAdminTests()
+  } catch (error) {
+    console.error("Test yaratishda xatolik:", error)
+    alert("Test yaratishda xatolik yuz berdi!")
+  }
+})
+
+// Project management
+function showCreateProjectModal() {
+  loadProjectStudentCheckboxes()
+  loadGroupOptions()
+  document.getElementById("createProjectModal").classList.remove("hidden")
+  document.getElementById("createProjectModal").classList.add("flex")
+}
+
+function closeCreateProjectModal() {
+  document.getElementById("createProjectModal").classList.add("hidden")
+  document.getElementById("createProjectModal").classList.remove("flex")
+  document.getElementById("createProjectForm").reset()
+}
+
+async function loadProjectStudentCheckboxes() {
+  try {
+    const users = await firebaseManager.getArrayData("users")
+    const students = users.filter((u) => u.role === "student")
+
+    const container = document.getElementById("projectStudentCheckboxes")
+    container.innerHTML = ""
+
+    students.forEach((student) => {
+      const checkbox = document.createElement("label")
+      checkbox.className = "flex items-center space-x-2 p-1 cursor-pointer"
+      checkbox.innerHTML = `
+        <input type="checkbox" value="${student.id}" class="text-blue-600">
+        <span class="text-sm">${student.name} (${student.email})</span>
+      `
+      container.appendChild(checkbox)
+    })
+  } catch (error) {
+    console.error("O'quvchilar ro'yxatini yuklashda xatolik:", error)
+  }
+}
+
+document.getElementById("createProjectForm").addEventListener("submit", async (e) => {
+  e.preventDefault()
+
+  const title = document.getElementById("projectTitle").value.trim()
+  const description = document.getElementById("projectDescription").value.trim()
+  const link = document.getElementById("projectLink").value.trim()
+  const deadlineDays = Number.parseInt(document.getElementById("projectDeadlineDays").value) || 0
+  const deadlineHours = Number.parseInt(document.getElementById("projectDeadlineHours").value) || 0
+  const deadlineMinutes = Number.parseInt(document.getElementById("projectDeadlineMinutes").value) || 0
+  const payment = Number.parseInt(document.getElementById("projectPayment").value) || 0
+  const assignmentType = document.getElementById("projectAssignmentType").value
+
+  if (!title || !description) {
+    alert("Loyiha nomi va tavsifini kiriting!")
+    return
+  }
+
+  if (deadlineDays === 0 && deadlineHours === 0 && deadlineMinutes === 0) {
+    alert("Muddat belgilang!")
+    return
+  }
+
+  if (!payment || payment <= 0) {
+    alert("To'lov miqdorini kiriting!")
+    return
+  }
+
+  let assignedTo = []
+
+  if (assignmentType === "individual") {
+    assignedTo = Array.from(document.querySelectorAll("#projectStudentCheckboxes input:checked")).map(
+      (cb) => cb.value,
+    )
+    if (assignedTo.length === 0) {
+      alert("Kamida bitta o'quvchini tanlang!")
+      return
+    }
+  } else if (assignmentType === "group") {
+    const groupId = document.getElementById("projectGroupSelect").value
+    if (!groupId) {
+      alert("Guruhni tanlang!")
+      return
+    }
+    
+    // Get all students in the selected group
+    const users = await firebaseManager.getArrayData("users")
+    assignedTo = users.filter(u => u.groupId === groupId).map(u => u.id)
+    
+    if (assignedTo.length === 0) {
+      alert("Tanlangan guruhda o'quvchilar yo'q!")
+      return
+    }
+  } else if (assignmentType === "all") {
+    const users = await firebaseManager.getArrayData("users")
+    assignedTo = users.filter(u => u.role === "student").map(u => u.id)
+    
+    if (assignedTo.length === 0) {
+      alert("Tizimda o'quvchilar yo'q!")
+      return
+    }
+  }
+
+  try {
+    // Calculate deadline
+    const totalMinutes = (deadlineDays * 24 * 60) + (deadlineHours * 60) + deadlineMinutes
+    const deadline = new Date(Date.now() + totalMinutes * 60 * 1000)
+
+    const newProject = {
+      title,
+      description,
+      link,
+      deadline: deadline.toISOString(),
+      payment,
+      assignedTo,
+      createdBy: currentUser.id,
+      createdAt: new Date().toISOString(),
+      status: "active",
+    }
+
+    await firebaseManager.addToArray("projects", newProject)
+
+    // Send notifications to assigned students
+    await firebaseManager.sendNotification(assignedTo, {
+      type: "project",
+      title: "Yangi loyiha",
+      message: `"${title}" loyihasi sizga tayinlandi (${payment} coin)`,
+    })
+
+    alert("Loyiha muvaffaqiyatli yaratildi!")
+    closeCreateProjectModal()
+    await loadAdminProjects()
+  } catch (error) {
+    console.error("Loyiha yaratishda xatolik:", error)
+    alert("Loyiha yaratishda xatolik yuz berdi!")
+  }
+})
+
 // Make functions global for onclick handlers
 window.showTab = showTab
+window.showCreateGroupModal = showCreateGroupModal
+window.closeCreateGroupModal = closeCreateGroupModal
+window.assignToGroup = assignToGroup
+window.confirmGroupAssignment = confirmGroupAssignment
+window.editStudentName = editStudentName
+window.viewGroupMembers = viewGroupMembers
+window.deleteGroup = deleteGroup
 window.showCreateTaskModal = showCreateTaskModal
 window.closeCreateTaskModal = closeCreateTaskModal
+window.toggleTaskAssignmentOptions = toggleTaskAssignmentOptions
 window.showCreateTestModal = showCreateTestModal
 window.closeCreateTestModal = closeCreateTestModal
 window.addQuestion = addQuestion
 window.removeQuestion = removeQuestion
 window.showCreateProjectModal = showCreateProjectModal
 window.closeCreateProjectModal = closeCreateProjectModal
+window.toggleProjectAssignmentOptions = toggleProjectAssignmentOptions
 window.markAttendance = markAttendance
 window.markAttendanceForAll = markAttendanceForAll
 window.showAttendanceConfirmModal = showAttendanceConfirmModal
 window.closeAttendanceConfirmModal = closeAttendanceConfirmModal
-window.confirmAttendanceAction = confirmAttendanceAction
+window.confirmAttendance = confirmAttendance
 window.showFineModal = showFineModal
 window.applyFine = applyFine
 window.showWithdrawalConfirmModal = showWithdrawalConfirmModal
