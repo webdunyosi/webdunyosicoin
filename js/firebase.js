@@ -84,6 +84,9 @@ class FirebaseManager {
         "notifications",
         "userActivity",
         "referrals",
+        "monthlyPayments", // Yangi: oylik to'lovlar
+        "paymentRequests", // Yangi: to'lov so'rovlari
+        "groups", // Yangi: guruhlar
       ]
 
       for (const collection of defaultCollections) {
@@ -315,6 +318,8 @@ class FirebaseManager {
         balance: 0,
         referralCode: referralCode,
         joinDate: new Date().toISOString(),
+        paymentStatus: "unpaid", // Yangi: to'lov holati
+        lastPaymentDate: null, // Yangi: oxirgi to'lov sanasi
       }
 
       await this.addToArray("users", newUser)
@@ -344,6 +349,126 @@ class FirebaseManager {
       return newUser
     } catch (error) {
       console.error("Ro'yxatdan o'tishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Oylik to'lov yaratish
+  async createMonthlyPayment(studentId, amount, description, dueDate) {
+    try {
+      const payment = {
+        studentId,
+        amount,
+        description,
+        dueDate: dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 kun
+        status: "pending",
+        createdAt: new Date().toISOString(),
+        createdBy: "admin"
+      }
+
+      const paymentId = await this.addToArray("monthlyPayments", payment)
+
+      // O'quvchining to'lov holatini yangilash
+      await this.updateInArray("users", studentId, {
+        paymentStatus: "unpaid",
+        currentPaymentId: paymentId,
+        paymentAmount: amount,
+        paymentDescription: description,
+        paymentDueDate: payment.dueDate
+      })
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([studentId], {
+        type: "payment",
+        title: "Yangi to'lov",
+        message: `${description}: ${amount.toLocaleString()} so'm`
+      })
+
+      return paymentId
+    } catch (error) {
+      console.error("Oylik to'lov yaratishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // To'lovni tasdiqlash
+  async confirmPayment(paymentId, studentId) {
+    try {
+      // To'lov holatini yangilash
+      await this.updateInArray("monthlyPayments", paymentId, {
+        status: "paid",
+        paidAt: new Date().toISOString()
+      })
+
+      // O'quvchining to'lov holatini yangilash
+      await this.updateInArray("users", studentId, {
+        paymentStatus: "paid",
+        lastPaymentDate: new Date().toISOString(),
+        currentPaymentId: null,
+        paymentAmount: null,
+        paymentDescription: null,
+        paymentDueDate: null
+      })
+
+      // Transaction yozish
+      const users = await this.getArrayData("users")
+      const user = users.find(u => u.id === studentId)
+      
+      await this.addToArray("paymentTransactions", {
+        studentId,
+        type: "payment",
+        amount: user.paymentAmount || 0,
+        description: `To'lov tasdiqlandi: ${user.paymentDescription || "Oylik to'lov"}`,
+        timestamp: new Date().toISOString(),
+        relatedId: paymentId
+      })
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([studentId], {
+        type: "payment",
+        title: "To'lov tasdiqlandi",
+        message: "Sizning to'lovingiz admin tomonidan tasdiqlandi"
+      })
+
+      return true
+    } catch (error) {
+      console.error("To'lovni tasdiqlashda xatolik:", error)
+      throw error
+    }
+  }
+
+  // To'lov jarima qo'llash
+  async applyPaymentPenalty(studentId, amount = 2000) {
+    try {
+      const users = await this.getArrayData("users")
+      const user = users.find(u => u.id === studentId)
+      
+      if (user) {
+        // Jarima qo'llash
+        await this.updateInArray("users", studentId, {
+          rating: (user.rating || 0) - amount
+        })
+
+        // Transaction yozish
+        await this.addToArray("paymentTransactions", {
+          studentId,
+          type: "fine",
+          amount,
+          description: "To'lov jarima - oylik to'lov kechiktirildi",
+          timestamp: new Date().toISOString()
+        })
+
+        // Bildirishnoma yuborish
+        await this.sendNotification([studentId], {
+          type: "payment",
+          title: "To'lov jarima",
+          message: `Oylik to'lovni kechiktirganingiz uchun ${amount} coin jarima qo'llandi`
+        })
+
+        return true
+      }
+    } catch (error) {
+      console.error("To'lov jarima qo'llashda xatolik:", error)
       throw error
     }
   }
@@ -493,6 +618,9 @@ class FirebaseManager {
         "notifications",
         "userActivity",
         "referrals",
+        "monthlyPayments",
+        "paymentRequests",
+        "groups",
       ]
 
       const exportData = {}

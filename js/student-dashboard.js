@@ -5,6 +5,7 @@ let currentTaskId = null
 let currentTestId = null
 let currentProjectId = null
 let timerIntervals = new Map()
+let uploadedImage = null
 
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
@@ -18,6 +19,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   try {
     await updateStudentInfo()
+    await checkPaymentStatus()
     await loadTasks()
     await loadTests()
     await loadProjects()
@@ -30,12 +32,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Auto-refresh data every 30 seconds
     setInterval(async () => {
       try {
+        await updateStudentInfo()
+        await checkPaymentStatus()
         await loadTasks()
         await loadTests()
         await loadProjects()
         await loadChat()
         await loadLeaderboard()
-        await updateStudentInfo()
         await loadWallet()
         await loadNotifications()
         await loadReferralInfo()
@@ -54,6 +57,61 @@ document.addEventListener("DOMContentLoaded", async () => {
     alert("Ma'lumotlarni yuklashda xatolik yuz berdi!")
   }
 })
+
+// To'lov holatini tekshirish
+async function checkPaymentStatus() {
+  try {
+    const users = await firebaseManager.getArrayData("users")
+    const user = users.find(u => u.id === currentUser.id)
+    
+    if (user && user.paymentStatus === "unpaid" && user.paymentAmount) {
+      // To'lov kerak bo'lgan holatni ko'rsatish
+      showPaymentAlert(user)
+    } else {
+      hidePaymentAlert()
+    }
+  } catch (error) {
+    console.error("To'lov holatini tekshirishda xatolik:", error)
+  }
+}
+
+function showPaymentAlert(user) {
+  const paymentAlert = document.getElementById("paymentAlert")
+  const paymentStatusCard = document.getElementById("paymentStatusCard")
+  const paymentStatusIndicator = document.getElementById("paymentStatusIndicator")
+  
+  if (paymentAlert) {
+    paymentAlert.classList.remove("hidden")
+    document.getElementById("paymentAlertText").textContent = 
+      `To'lov kerak: ${user.paymentAmount?.toLocaleString()} so'm`
+  }
+  
+  if (paymentStatusCard) {
+    paymentStatusCard.classList.remove("hidden")
+    document.getElementById("paymentDescription").textContent = user.paymentDescription || "Oylik to'lov"
+    document.getElementById("paymentAmount").textContent = `${user.paymentAmount?.toLocaleString()} so'm`
+    
+    if (user.paymentDueDate) {
+      const dueDate = new Date(user.paymentDueDate)
+      document.getElementById("paymentDueDate").textContent = 
+        `Muddat: ${dueDate.toLocaleDateString("uz-UZ")}`
+    }
+  }
+  
+  if (paymentStatusIndicator) {
+    paymentStatusIndicator.classList.remove("hidden")
+  }
+}
+
+function hidePaymentAlert() {
+  const paymentAlert = document.getElementById("paymentAlert")
+  const paymentStatusCard = document.getElementById("paymentStatusCard")
+  const paymentStatusIndicator = document.getElementById("paymentStatusIndicator")
+  
+  if (paymentAlert) paymentAlert.classList.add("hidden")
+  if (paymentStatusCard) paymentStatusCard.classList.add("hidden")
+  if (paymentStatusIndicator) paymentStatusIndicator.classList.add("hidden")
+}
 
 function startTimer(elementId, deadline) {
   // Clear existing timer if any
@@ -109,6 +167,9 @@ async function updateStudentInfo() {
       document.getElementById("walletCoins").textContent = `${user.rating || 0} coin`
       currentUser.rating = user.rating || 0
       currentUser.balance = balance
+      currentUser.groupId = user.groupId // Update group ID
+      currentUser.paymentStatus = user.paymentStatus
+      currentUser.paymentAmount = user.paymentAmount
 
       // Update mobile stats
       if (document.getElementById("studentRatingMobile")) {
@@ -163,18 +224,95 @@ function showTab(tabName) {
   document.getElementById(tabName + "Content").classList.remove("hidden")
 }
 
+// Vazifa topshirish turi ko'rsatish
+function showSubmissionType(type) {
+  // Barcha submission turlarini yashirish
+  document.querySelectorAll('.submission-type').forEach(el => {
+    el.classList.add('hidden')
+  })
+  
+  // Tanlangan turni ko'rsatish
+  document.getElementById(type + 'Submission').classList.remove('hidden')
+  
+  // Button holatini yangilash
+  document.querySelectorAll('[onclick^="showSubmissionType"]').forEach(btn => {
+    btn.classList.remove('border-blue-500', 'bg-blue-50')
+    btn.classList.add('border-gray-200')
+  })
+  
+  event.target.closest('button').classList.add('border-blue-500', 'bg-blue-50')
+  event.target.closest('button').classList.remove('border-gray-200')
+}
+
+// Rasm yuklash
+function handleImageUpload(input) {
+  const file = input.files[0]
+  if (!file) return
+  
+  // Fayl hajmini tekshirish (5MB)
+  if (file.size > 5 * 1024 * 1024) {
+    alert('Rasm hajmi 5MB dan kichik bo\'lishi kerak!')
+    input.value = ''
+    return
+  }
+  
+  // Fayl turini tekshirish
+  if (!file.type.startsWith('image/')) {
+    alert('Faqat rasm fayllarini yuklash mumkin!')
+    input.value = ''
+    return
+  }
+  
+  const reader = new FileReader()
+  reader.onload = function(e) {
+    uploadedImage = e.target.result
+    
+    // Preview ko'rsatish
+    document.getElementById('previewImg').src = uploadedImage
+    document.getElementById('imageUploadArea').classList.add('hidden')
+    document.getElementById('imagePreview').classList.remove('hidden')
+  }
+  reader.readAsDataURL(file)
+}
+
 async function loadTasks() {
   try {
     const tasks = await firebaseManager.getArrayData("tasks")
     const submissions = await firebaseManager.getArrayData("submissions")
+    const groups = await firebaseManager.getArrayData("groups")
+
+    // Get current user's updated info to ensure we have latest groupId
+    const users = await firebaseManager.getArrayData("users")
+    const currentUserData = users.find(u => u.id === currentUser.id)
+    if (currentUserData) {
+      currentUser.groupId = currentUserData.groupId
+    }
 
     // Get tasks assigned to user or their group
     const myTasks = tasks.filter((task) => {
       if (task.status !== "active") return false
+      
+      // Check if task is assigned directly to user
       if (task.assignedTo && task.assignedTo.includes(currentUser.id)) return true
-      if (task.assignedGroups && currentUser.groupId) {
-        return task.assignedGroups.includes(currentUser.groupId)
+      
+      // Check if task is assigned to user's group
+      if (currentUser.groupId) {
+        // Check if task has assignedGroups array and includes user's group
+        if (task.assignedGroups && task.assignedGroups.includes(currentUser.groupId)) return true
+        
+        // Also check if task was assigned to "group" type and matches user's group
+        if (task.assignmentType === "group" && task.groupId === currentUser.groupId) return true
+        
+        // Check if user's group members are in assignedTo array (for backward compatibility)
+        if (task.assignmentType === "group" && task.assignedTo) {
+          const groupMembers = users.filter(u => u.groupId === currentUser.groupId).map(u => u.id)
+          return task.assignedTo.some(id => groupMembers.includes(id))
+        }
       }
+      
+      // Check if task is assigned to all students
+      if (task.assignmentType === "all") return true
+      
       return false
     })
 
@@ -308,11 +446,35 @@ async function loadProjects() {
     const projects = await firebaseManager.getArrayData("projects")
     const projectSubmissions = await firebaseManager.getArrayData("projectSubmissions")
 
+    // Get current user's updated info to ensure we have latest groupId
+    const users = await firebaseManager.getArrayData("users")
+    const currentUserData = users.find(u => u.id === currentUser.id)
+    if (currentUserData) {
+      currentUser.groupId = currentUserData.groupId
+    }
+
     const myProjects = projects.filter((project) => {
+      // Check if project is assigned directly to user
       if (project.assignedTo && project.assignedTo.includes(currentUser.id)) return true
-      if (project.assignedGroups && currentUser.groupId) {
-        return project.assignedGroups.includes(currentUser.groupId)
+      
+      // Check if project is assigned to user's group
+      if (currentUser.groupId) {
+        // Check if project has assignedGroups array and includes user's group
+        if (project.assignedGroups && project.assignedGroups.includes(currentUser.groupId)) return true
+        
+        // Also check if project was assigned to "group" type and matches user's group
+        if (project.assignmentType === "group" && project.groupId === currentUser.groupId) return true
+        
+        // Check if user's group members are in assignedTo array (for backward compatibility)
+        if (project.assignmentType === "group" && project.assignedTo) {
+          const groupMembers = users.filter(u => u.groupId === currentUser.groupId).map(u => u.id)
+          return project.assignedTo.some(id => groupMembers.includes(id))
+        }
       }
+      
+      // Check if project is assigned to all students
+      if (project.assignmentType === "all") return true
+      
       return false
     })
 
@@ -639,16 +801,39 @@ async function markAllAsRead() {
 
 function openTaskModal(taskId) {
   currentTaskId = taskId
+  uploadedImage = null
+  
   firebaseManager.getArrayData("tasks").then((tasks) => {
     const task = tasks.find((t) => t.id === taskId)
 
     if (task) {
       document.getElementById("modalTaskTitle").textContent = task.title
       document.getElementById("modalTaskDescription").textContent = task.description
+      
+      // Reset all form fields
       document.getElementById("htmlCode").value = ""
       document.getElementById("cssCode").value = ""
       document.getElementById("jsCode").value = ""
       document.getElementById("taskWebsiteUrl").value = ""
+      document.getElementById("imageUpload").value = ""
+      
+      // Reset submission type display
+      document.querySelectorAll('.submission-type').forEach(el => {
+        el.classList.add('hidden')
+      })
+      document.getElementById('codeSubmission').classList.remove('hidden')
+      
+      // Reset image preview
+      document.getElementById('imageUploadArea').classList.remove('hidden')
+      document.getElementById('imagePreview').classList.add('hidden')
+      
+      // Reset button states
+      document.querySelectorAll('[onclick^="showSubmissionType"]').forEach(btn => {
+        btn.classList.remove('border-blue-500', 'bg-blue-50')
+        btn.classList.add('border-gray-200')
+      })
+      document.querySelector('[onclick="showSubmissionType(\'code\')"]').classList.add('border-blue-500', 'bg-blue-50')
+      
       document.getElementById("taskModal").classList.remove("hidden")
       document.getElementById("taskModal").classList.add("flex")
     }
@@ -659,6 +844,7 @@ function closeTaskModal() {
   document.getElementById("taskModal").classList.add("hidden")
   document.getElementById("taskModal").classList.remove("flex")
   currentTaskId = null
+  uploadedImage = null
 }
 
 async function submitTask() {
@@ -673,8 +859,8 @@ async function submitTask() {
   const websiteUrl = document.getElementById("taskWebsiteUrl").value.trim()
 
   // Check if at least one field is filled
-  if (!htmlCode && !cssCode && !jsCode && !websiteUrl) {
-    alert("Kamida bitta kod maydonini to'ldiring yoki sayt URL kiriting!")
+  if (!htmlCode && !cssCode && !jsCode && !websiteUrl && !uploadedImage) {
+    alert("Kamida bitta maydonni to'ldiring: kod, URL yoki rasm!")
     return
   }
 
@@ -703,6 +889,7 @@ async function submitTask() {
       cssCode: cssCode || "",
       jsCode: jsCode || "",
       websiteUrl: websiteUrl || "",
+      submissionImage: uploadedImage || "",
       submittedAt: new Date().toISOString(),
       status: "pending",
     }
@@ -1103,6 +1290,8 @@ function logout() {
 
 // Make functions global for onclick handlers
 window.showTab = showTab
+window.showSubmissionType = showSubmissionType
+window.handleImageUpload = handleImageUpload
 window.toggleNotifications = toggleNotifications
 window.markAllAsRead = markAllAsRead
 window.openTaskModal = openTaskModal
