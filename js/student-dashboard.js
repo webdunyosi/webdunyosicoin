@@ -1,1731 +1,1451 @@
 import { firebaseManager } from "./firebase.js"
 
-// Global variables
 let currentUser = null
-let allStudents = []
-let allGroups = []
-let allTasks = []
-let allTests = []
-let allProjects = []
+let currentTaskId = null
+let currentTestId = null
+let currentProjectId = null
+let timerIntervals = new Map()
+let uploadedImage = null
 
-// Initialize dashboard
-document.addEventListener("DOMContentLoaded", async function () {
-  // Check authentication
-  const userData = sessionStorage.getItem("currentUser")
-  if (!userData) {
-    window.location.href = "index.html"
-    return
+// Initialize
+document.addEventListener("DOMContentLoaded", async () => {
+  try {
+    // Check if user data exists
+    const userData = sessionStorage.getItem("currentUser")
+    if (!userData) {
+      console.log("No user data found, redirecting to login")
+      window.location.href = "index.html"
+      return
+    }
+
+    currentUser = JSON.parse(userData)
+    
+    if (!currentUser || currentUser.role !== "student") {
+      console.log("Invalid user data or not a student, redirecting to login")
+      sessionStorage.removeItem("currentUser")
+      window.location.href = "index.html"
+      return
+    }
+
+    // Set student name
+    const studentNameElement = document.getElementById("studentName")
+    if (studentNameElement) {
+      studentNameElement.textContent = currentUser.name
+    }
+
+    // Wait for Firebase to be ready
+    await new Promise(resolve => setTimeout(resolve, 1000))
+
+    // Check internet connection
+    if (!navigator.onLine) {
+      console.warn("No internet connection, some features may not work")
+    }
+
+    // Load all data
+    await Promise.all([
+      updateStudentInfo(),
+      checkPaymentStatus(),
+      loadTasks(),
+      loadTests(),
+      loadProjects(),
+      loadChat(),
+      loadLeaderboard(),
+      loadWallet(),
+      loadNotifications(),
+      loadReferralInfo()
+    ])
+
+    // Auto-refresh data every 30 seconds
+    setInterval(async () => {
+      try {
+        if (navigator.onLine) {
+          await Promise.all([
+            updateStudentInfo(),
+            checkPaymentStatus(),
+            loadTasks(),
+            loadTests(),
+            loadProjects(),
+            loadChat(),
+            loadLeaderboard(),
+            loadWallet(),
+            loadNotifications(),
+            loadReferralInfo()
+          ])
+        }
+      } catch (error) {
+        console.error("Auto-refresh xatoligi:", error)
+      }
+    }, 30000)
+
+    // Add event listeners
+    const withdrawalCoinsInput = document.getElementById("withdrawalCoins")
+    if (withdrawalCoinsInput) {
+      withdrawalCoinsInput.addEventListener("input", updateWithdrawalAmount)
+    }
+
+    const withdrawalCardInput = document.getElementById("withdrawalCardNumber")
+    if (withdrawalCardInput) {
+      withdrawalCardInput.addEventListener("input", formatCardNumber)
+    }
+
+    const chatInput = document.getElementById("chatInput")
+    if (chatInput) {
+      chatInput.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") {
+          sendMessage()
+        }
+      })
+    }
+
+  } catch (error) {
+    console.error("Initialization xatoligi:", error)
+    alert("Sahifani yuklashda xatolik yuz berdi! Iltimos, sahifani yangilang.")
+    // Redirect to login on critical error
+    setTimeout(() => {
+      window.location.href = "index.html"
+    }, 2000)
   }
-
-  currentUser = JSON.parse(userData)
-  if (currentUser.role !== "admin") {
-    alert("Bu sahifaga faqat adminlar kirishi mumkin!")
-    window.location.href = "index.html"
-    return
-  }
-
-  // Initialize menu
-  initializeMenu()
-
-  // Load initial data
-  await loadDashboardData()
-
-  // Show dashboard by default
-  showSection("dashboard")
 })
 
-// Menu initialization
-function initializeMenu() {
-  const menuItems = document.querySelectorAll(".menu-item[data-section]")
-  menuItems.forEach((item) => {
-    item.addEventListener("click", (e) => {
-      e.preventDefault()
-      const section = item.getAttribute("data-section")
-      showSection(section)
-    })
-  })
-}
-
-// Show section
-function showSection(sectionName) {
-  // Hide all sections
-  const sections = document.querySelectorAll(".section")
-  sections.forEach((section) => section.classList.add("hidden"))
-
-  // Show selected section
-  const targetSection = document.getElementById(`${sectionName}-section`)
-  if (targetSection) {
-    targetSection.classList.remove("hidden")
-  }
-
-  // Update menu active state
-  const menuItems = document.querySelectorAll(".menu-item")
-  menuItems.forEach((item) => item.classList.remove("active"))
-
-  const activeMenuItem = document.querySelector(`[data-section="${sectionName}"]`)
-  if (activeMenuItem) {
-    activeMenuItem.classList.add("active")
-  }
-
-  // Load section data
-  loadSectionData(sectionName)
-}
-
-// Load section data
-async function loadSectionData(sectionName) {
-  try {
-    switch (sectionName) {
-      case "dashboard":
-        await loadDashboardData()
-        break
-      case "students":
-        await loadStudents()
-        break
-      case "groups":
-        await loadGroups()
-        break
-      case "tasks":
-        await loadTasks()
-        break
-      case "tests":
-        await loadTests()
-        break
-      case "projects":
-        await loadProjects()
-        break
-      case "attendance":
-        await loadAttendance()
-        break
-      case "payments":
-        await loadPayments()
-        break
-      case "referrals":
-        await loadReferrals()
-        break
-    }
-  } catch (error) {
-    console.error(`Error loading ${sectionName} data:`, error)
-    showNotification(`${sectionName} ma'lumotlarini yuklashda xatolik`, "error")
-  }
-}
-
-// Load dashboard data
-async function loadDashboardData() {
-  try {
-    const stats = await firebaseManager.getStatistics()
-    displayStatistics(stats)
-    await loadRecentActivity()
-  } catch (error) {
-    console.error("Dashboard ma'lumotlarini yuklashda xatolik:", error)
-  }
-}
-
-// Display statistics
-function displayStatistics(stats) {
-  const container = document.getElementById("statisticsContainer")
-  container.innerHTML = `
-    <div class="bg-white rounded-lg shadow p-6">
-      <div class="flex items-center">
-        <div class="p-3 rounded-full bg-blue-100 text-blue-600">
-          <i class="fas fa-users text-xl"></i>
-        </div>
-        <div class="ml-4">
-          <p class="text-sm font-medium text-gray-600">Jami o'quvchilar</p>
-          <p class="text-2xl font-semibold text-gray-900">${stats.general.totalStudents}</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="bg-white rounded-lg shadow p-6">
-      <div class="flex items-center">
-        <div class="p-3 rounded-full bg-green-100 text-green-600">
-          <i class="fas fa-tasks text-xl"></i>
-        </div>
-        <div class="ml-4">
-          <p class="text-sm font-medium text-gray-600">Jami vazifalar</p>
-          <p class="text-2xl font-semibold text-gray-900">${stats.general.totalTasks}</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="bg-white rounded-lg shadow p-6">
-      <div class="flex items-center">
-        <div class="p-3 rounded-full bg-purple-100 text-purple-600">
-          <i class="fas fa-clipboard-check text-xl"></i>
-        </div>
-        <div class="ml-4">
-          <p class="text-sm font-medium text-gray-600">Jami testlar</p>
-          <p class="text-2xl font-semibold text-gray-900">${stats.general.totalTests}</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="bg-white rounded-lg shadow p-6">
-      <div class="flex items-center">
-        <div class="p-3 rounded-full bg-yellow-100 text-yellow-600">
-          <i class="fas fa-credit-card text-xl"></i>
-        </div>
-        <div class="ml-4">
-          <p class="text-sm font-medium text-gray-600">To'lov foizi</p>
-          <p class="text-2xl font-semibold text-gray-900">${stats.payments.paymentRate}%</p>
-        </div>
-      </div>
-    </div>
-  `
-}
-
-// Load recent activity
-async function loadRecentActivity() {
-  try {
-    const activities = await firebaseManager.getArrayData("userActivity")
-    const recentActivities = activities
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-      .slice(0, 10)
-
-    const container = document.getElementById("recentActivity")
-    if (recentActivities.length === 0) {
-      container.innerHTML = '<p class="text-gray-500">Hozircha faoliyat yo\'q</p>'
-      return
-    }
-
-    container.innerHTML = recentActivities
-      .map(
-        (activity) => `
-      <div class="flex items-center space-x-3 p-3 bg-gray-50 rounded">
-        <div class="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-          <i class="fas fa-user text-blue-600 text-xs"></i>
-        </div>
-        <div class="flex-1">
-          <p class="text-sm font-medium">${activity.description}</p>
-          <p class="text-xs text-gray-500">${formatDate(activity.timestamp)}</p>
-        </div>
-      </div>
-    `,
-      )
-      .join("")
-  } catch (error) {
-    console.error("Recent activity yuklashda xatolik:", error)
-  }
-}
-
-// Load students
-async function loadStudents() {
-  try {
-    allStudents = await firebaseManager.getArrayData("users")
-    allStudents = allStudents.filter((user) => user.role === "student")
-    displayStudents(allStudents)
-  } catch (error) {
-    console.error("O'quvchilarni yuklashda xatolik:", error)
-  }
-}
-
-// Display students
-function displayStudents(students) {
-  const container = document.getElementById("studentsContainer")
-  
-  if (students.length === 0) {
-    container.innerHTML = '<p class="text-gray-500">Hozircha o\'quvchilar yo\'q</p>'
+// Remove the old initialization code
+/*
+document.addEventListener("DOMContentLoaded", async () => {
+  currentUser = JSON.parse(sessionStorage.getItem("currentUser"))
+  if (!currentUser || currentUser.role !== "student") {
+    window.location.href = "index.html"
     return
   }
 
-  container.innerHTML = `
-    <div class="overflow-x-auto">
-      <table class="min-w-full divide-y divide-gray-200">
-        <thead class="bg-gray-50">
-          <tr>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">O'quvchi</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Coin</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">To'lov holati</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Guruh</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amallar</th>
-          </tr>
-        </thead>
-        <tbody class="bg-white divide-y divide-gray-200">
-          ${students
-            .map(
-              (student) => `
-            <tr>
-              <td class="px-6 py-4 whitespace-nowrap">
-                <div class="flex items-center">
-                  <div class="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
-                    <span class="text-blue-600 font-semibold">${student.name.charAt(0)}</span>
-                  </div>
-                  <div class="ml-4">
-                    <div class="text-sm font-medium text-gray-900">${student.name}</div>
-                    <div class="text-sm text-gray-500">${student.email}</div>
-                  </div>
-                </div>
-              </td>
-              <td class="px-6 py-4 whitespace-nowrap">
-                <span class="text-sm font-medium text-gray-900">${(student.rating || 0).toLocaleString()}</span>
-              </td>
-              <td class="px-6 py-4 whitespace-nowrap">
-                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                  student.paymentStatus === "paid"
-                    ? "bg-green-100 text-green-800"
-                    : student.paymentStatus === "partial"
-                    ? "bg-yellow-100 text-yellow-800"
-                    : "bg-red-100 text-red-800"
-                }">
-                  ${
-                    student.paymentStatus === "paid"
-                      ? "To'langan"
-                      : student.paymentStatus === "partial"
-                      ? "Qisman"
-                      : "To'lanmagan"
-                  }
-                </span>
-              </td>
-              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                ${student.groupId ? getGroupName(student.groupId) : "Guruhsiz"}
-              </td>
-              <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                <button onclick="showStudentActions('${student.id}')" class="text-blue-600 hover:text-blue-900">
-                  <i class="fas fa-cog"></i>
-                </button>
-              </td>
-            </tr>
-          `,
-            )
-            .join("")}
-        </tbody>
-      </table>
-    </div>
-  `
-}
+  document.getElementById("studentName").textContent = currentUser.name
 
-// Get group name
-function getGroupName(groupId) {
-  const group = allGroups.find((g) => g.id === groupId)
-  return group ? group.name : "Noma'lum guruh"
-}
-
-// Show student actions modal
-function showStudentActions(studentId) {
-  const student = allStudents.find((s) => s.id === studentId)
-  if (!student) return
-
-  showModal("O'quvchi boshqaruvi", `
-    <div class="space-y-4">
-      <div class="text-center">
-        <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-          <span class="text-blue-600 font-bold text-xl">${student.name.charAt(0)}</span>
-        </div>
-        <h3 class="text-lg font-semibold">${student.name}</h3>
-        <p class="text-gray-500">${student.email}</p>
-        <p class="text-sm text-gray-600">Coin: ${(student.rating || 0).toLocaleString()}</p>
-      </div>
-      
-      <div class="grid grid-cols-2 gap-3">
-        <button onclick="showAdjustCoinsModal('${studentId}')" class="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">
-          <i class="fas fa-coins mr-2"></i>Coin boshqarish
-        </button>
-        <button onclick="showEditStudentModal('${studentId}')" class="bg-green-500 text-white py-2 px-4 rounded hover:bg-green-600">
-          <i class="fas fa-edit mr-2"></i>Tahrirlash
-        </button>
-        <button onclick="showStudentHistory('${studentId}')" class="bg-purple-500 text-white py-2 px-4 rounded hover:bg-purple-600">
-          <i class="fas fa-history mr-2"></i>Tarix
-        </button>
-        <button onclick="showStudentStats('${studentId}')" class="bg-yellow-500 text-white py-2 px-4 rounded hover:bg-yellow-600">
-          <i class="fas fa-chart-bar mr-2"></i>Statistika
-        </button>
-      </div>
-    </div>
-  `)
-}
-
-// Show adjust coins modal
-function showAdjustCoinsModal(studentId) {
-  const student = allStudents.find((s) => s.id === studentId)
-  if (!student) return
-
-  showModal("Coin boshqarish", `
-    <form onsubmit="adjustCoins(event, '${studentId}')">
-      <div class="space-y-4">
-        <div class="text-center">
-          <h3 class="text-lg font-semibold">${student.name}</h3>
-          <p class="text-gray-600">Joriy coin: ${(student.rating || 0).toLocaleString()}</p>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Miqdor</label>
-          <input type="number" id="coinAmount" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
-          <p class="text-xs text-gray-500 mt-1">Musbat son qo'shish, manfiy son ayirish uchun</p>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Sabab</label>
-          <textarea id="coinReason" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" rows="3" required></textarea>
-        </div>
-        
-        <div class="flex space-x-3">
-          <button type="button" onclick="closeModal()" class="flex-1 bg-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-400">
-            Bekor qilish
-          </button>
-          <button type="submit" class="flex-1 bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">
-            Saqlash
-          </button>
-        </div>
-      </div>
-    </form>
-  `)
-}
-
-// Adjust coins
-async function adjustCoins(event, studentId) {
-  event.preventDefault()
-  
   try {
-    const amount = parseInt(document.getElementById("coinAmount").value)
-    const reason = document.getElementById("coinReason").value.trim()
-    
-    if (!reason) {
-      alert("Sabab kiritish majburiy!")
-      return
-    }
-    
-    await firebaseManager.adjustCoins(studentId, amount, reason)
-    showNotification("Coin muvaffaqiyatli o'zgartirildi", "success")
-    closeModal()
-    await loadStudents()
+    await updateStudentInfo()
+    await checkPaymentStatus()
+    await loadTasks()
+    await loadTests()
+    await loadProjects()
+    await loadChat()
+    await loadLeaderboard()
+    await loadWallet()
+    await loadNotifications()
+    await loadReferralInfo()
+
+    // Auto-refresh data every 30 seconds
+    setInterval(async () => {
+      try {
+        await updateStudentInfo()
+        await checkPaymentStatus()
+        await loadTasks()
+        await loadTests()
+        await loadProjects()
+        await loadChat()
+        await loadLeaderboard()
+        await loadWallet()
+        await loadNotifications()
+        await loadReferralInfo()
+      } catch (error) {
+        console.error("Auto-refresh xatoligi:", error)
+      }
+    }, 30000)
+
+    // Add event listener for withdrawal coins input
+    document.getElementById("withdrawalCoins").addEventListener("input", updateWithdrawalAmount)
+
+    // Format card number input
+    document.getElementById("withdrawalCardNumber").addEventListener("input", formatCardNumber)
   } catch (error) {
-    console.error("Coin o'zgartirishda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
+    console.error("Initialization xatoligi:", error)
+    alert("Ma'lumotlarni yuklashda xatolik yuz berdi!")
+  }
+})
+*/
+
+// To'lov holatini tekshirish
+async function checkPaymentStatus() {
+  try {
+    const users = await firebaseManager.getArrayData("users")
+    const user = users.find(u => u.id === currentUser.id)
+    
+    if (user && user.paymentStatus === "unpaid" && user.paymentAmount) {
+      // To'lov kerak bo'lgan holatni ko'rsatish
+      showPaymentAlert(user)
+    } else {
+      hidePaymentAlert()
+    }
+  } catch (error) {
+    console.error("To'lov holatini tekshirishda xatolik:", error)
   }
 }
 
-// Load tasks
+function showPaymentAlert(user) {
+  const paymentAlert = document.getElementById("paymentAlert")
+  const paymentStatusCard = document.getElementById("paymentStatusCard")
+  const paymentStatusIndicator = document.getElementById("paymentStatusIndicator")
+  
+  if (paymentAlert) {
+    paymentAlert.classList.remove("hidden")
+    document.getElementById("paymentAlertText").textContent = 
+      `To'lov kerak: ${user.paymentAmount?.toLocaleString()} so'm`
+  }
+  
+  if (paymentStatusCard) {
+    paymentStatusCard.classList.remove("hidden")
+    document.getElementById("paymentDescription").textContent = user.paymentDescription || "Oylik to'lov"
+    document.getElementById("paymentAmount").textContent = `${user.paymentAmount?.toLocaleString()} so'm`
+    
+    if (user.paymentDueDate) {
+      const dueDate = new Date(user.paymentDueDate)
+      document.getElementById("paymentDueDate").textContent = 
+        `Muddat: ${dueDate.toLocaleDateString("uz-UZ")}`
+    }
+  }
+  
+  if (paymentStatusIndicator) {
+    paymentStatusIndicator.classList.remove("hidden")
+  }
+}
+
+function hidePaymentAlert() {
+  const paymentAlert = document.getElementById("paymentAlert")
+  const paymentStatusCard = document.getElementById("paymentStatusCard")
+  const paymentStatusIndicator = document.getElementById("paymentStatusIndicator")
+  
+  if (paymentAlert) paymentAlert.classList.add("hidden")
+  if (paymentStatusCard) paymentStatusCard.classList.add("hidden")
+  if (paymentStatusIndicator) paymentStatusIndicator.classList.add("hidden")
+}
+
+function startTimer(elementId, deadline) {
+  // Clear existing timer if any
+  if (timerIntervals.has(elementId)) {
+    clearInterval(timerIntervals.get(elementId))
+  }
+
+  const timerElement = document.getElementById(elementId)
+  if (!timerElement) return
+
+  const updateTimer = () => {
+    const now = new Date().getTime()
+    const deadlineTime = new Date(deadline).getTime()
+    const timeLeft = deadlineTime - now
+
+    if (timeLeft <= 0) {
+      timerElement.innerHTML = '<span class="text-red-600 font-bold animate-pulse">Muddati o\'tgan!</span>'
+      clearInterval(timerIntervals.get(elementId))
+      timerIntervals.delete(elementId)
+      return
+    }
+
+    const days = Math.floor(timeLeft / (1000 * 60 * 60 * 24))
+    const hours = Math.floor((timeLeft % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+    const minutes = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60))
+    const seconds = Math.floor((timeLeft % (1000 * 60)) / 1000)
+
+    let timeDisplay = ""
+    if (days > 0) {
+      timeDisplay = `${days} kun ${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+    } else {
+      timeDisplay = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+    }
+
+    const colorClass = timeLeft < 3600000 ? 'text-red-600' : timeLeft < 7200000 ? 'text-orange-600' : 'text-blue-600'
+    timerElement.innerHTML = `<span class="${colorClass} font-mono font-bold animate-timer-pulse">${timeDisplay}</span>`
+  }
+
+  updateTimer()
+  const interval = setInterval(updateTimer, 1000)
+  timerIntervals.set(elementId, interval)
+}
+
+async function updateStudentInfo() {
+  try {
+    const users = await firebaseManager.getArrayData("users")
+    const user = users.find((u) => u.id === currentUser.id)
+    if (user) {
+      document.getElementById("studentRating").textContent = user.rating || 0
+      const balance = Math.floor((user.rating || 0) * 10) // 1 coin = 10 so'm
+      document.getElementById("studentBalance").textContent = `${balance.toLocaleString()} so'm`
+      document.getElementById("walletBalance").textContent = `${balance.toLocaleString()} so'm`
+      document.getElementById("walletCoins").textContent = `${user.rating || 0} coin`
+      currentUser.rating = user.rating || 0
+      currentUser.balance = balance
+      currentUser.groupId = user.groupId // Update group ID
+      currentUser.paymentStatus = user.paymentStatus
+      currentUser.paymentAmount = user.paymentAmount
+
+      // Update mobile stats
+      if (document.getElementById("studentRatingMobile")) {
+        document.getElementById("studentRatingMobile").textContent = `${user.rating || 0} coin`
+      }
+      if (document.getElementById("studentBalanceMobile")) {
+        document.getElementById("studentBalanceMobile").textContent = `${balance.toLocaleString()} so'm`
+      }
+
+      // Update color based on balance
+      const ratingElement = document.getElementById("studentRating")
+      const balanceElement = document.getElementById("studentBalance")
+      const walletBalanceElement = document.getElementById("walletBalance")
+      const walletCoinsElement = document.getElementById("walletCoins")
+
+      if ((user.rating || 0) < 0) {
+        ratingElement.className = "text-sm sm:text-lg font-bold text-red-600"
+        balanceElement.className = "text-xs text-red-600"
+        walletBalanceElement.className = "text-3xl font-bold text-red-600 mb-2"
+        walletCoinsElement.className = "text-2xl font-bold text-red-600 mb-1"
+      } else {
+        ratingElement.className = "text-sm sm:text-lg font-bold text-blue-600"
+        balanceElement.className = "text-xs text-green-600"
+        walletBalanceElement.className = "text-3xl font-bold text-green-600 mb-2"
+        walletCoinsElement.className = "text-2xl font-bold text-blue-600 mb-1"
+      }
+    }
+  } catch (error) {
+    console.error("O'quvchi ma'lumotlarini yangilashda xatolik:", error)
+  }
+}
+
+function updateWithdrawalAmount() {
+  const coins = Number.parseInt(document.getElementById("withdrawalCoins").value) || 0
+  const amount = coins * 10 // 1 coin = 10 so'm
+  document.getElementById("withdrawalAmount").textContent = `${amount.toLocaleString()} so'm`
+}
+
+function formatCardNumber(e) {
+  const value = e.target.value.replace(/\s/g, "").replace(/[^0-9]/gi, "")
+  const formattedValue = value.match(/.{1,4}/g)?.join(" ") || value
+  e.target.value = formattedValue
+}
+
+function showTab(tabName) {
+  // Hide all tabs
+  document.querySelectorAll(".tab-content").forEach((tab) => {
+    tab.classList.add("hidden")
+  })
+
+  // Show selected tab
+  document.getElementById(tabName + "Content").classList.remove("hidden")
+
+  // Update menu card active state
+  document.querySelectorAll(".menu-card").forEach((card) => {
+    if (!card.classList.contains("bg-gradient-to-br")) {
+      card.classList.remove("active")
+      card.style.background = ""
+      card.style.color = ""
+      card.style.border = ""
+      const icon = card.querySelector(".menu-icon")
+      const title = card.querySelector("h3")
+      if (icon) {
+        icon.classList.remove("text-white")
+        icon.classList.add("text-gray-600")
+      }
+      if (title) {
+        title.classList.remove("text-white")
+        title.classList.add("text-gray-800")
+      }
+    }
+  })
+
+  // Set active menu card
+  const activeCard = event?.target?.closest(".menu-card")
+  if (activeCard) {
+    if (!activeCard.classList.contains("bg-gradient-to-br")) {
+      activeCard.classList.add("active")
+      const icon = activeCard.querySelector(".menu-icon")
+      const title = activeCard.querySelector("h3")
+      if (icon) {
+        icon.classList.remove("text-gray-600")
+        icon.classList.add("text-white")
+      }
+      if (title) {
+        title.classList.remove("text-gray-800")
+        title.classList.add("text-white")
+      }
+    }
+  }
+}
+
+// Vazifa topshirish turi ko'rsatish
+function showSubmissionType(type) {
+  // Barcha submission turlarini yashirish
+  document.querySelectorAll('.submission-type').forEach(el => {
+    el.classList.add('hidden')
+  })
+  
+  // Tanlangan turni ko'rsatish
+  document.getElementById(type + 'Submission').classList.remove('hidden')
+  
+  // Button holatini yangilash
+  document.querySelectorAll('[onclick^="showSubmissionType"]').forEach(btn => {
+    btn.classList.remove('border-blue-500', 'bg-blue-50')
+    btn.classList.add('border-gray-200')
+  })
+  
+  event.target.closest('button').classList.add('border-blue-500', 'bg-blue-50')
+  event.target.closest('button').classList.remove('border-gray-200')
+}
+
+// Rasm yuklash
+function handleImageUpload(input) {
+  const file = input.files[0]
+  if (!file) return
+  
+  // Fayl hajmini tekshirish (5MB)
+  if (file.size > 5 * 1024 * 1024) {
+    alert('Rasm hajmi 5MB dan kichik bo\'lishi kerak!')
+    input.value = ''
+    return
+  }
+  
+  // Fayl turini tekshirish
+  if (!file.type.startsWith('image/')) {
+    alert('Faqat rasm fayllarini yuklash mumkin!')
+    input.value = ''
+    return
+  }
+  
+  const reader = new FileReader()
+  reader.onload = function(e) {
+    uploadedImage = e.target.result
+    
+    // Preview ko'rsatish
+    document.getElementById('previewImg').src = uploadedImage
+    document.getElementById('imageUploadArea').classList.add('hidden')
+    document.getElementById('imagePreview').classList.remove('hidden')
+  }
+  reader.readAsDataURL(file)
+}
+
 async function loadTasks() {
   try {
-    allTasks = await firebaseManager.getArrayData("tasks")
-    displayTasks(allTasks)
-  } catch (error) {
-    console.error("Vazifalarni yuklashda xatolik:", error)
-  }
-}
-
-// Display tasks
-function displayTasks(tasks) {
-  const container = document.getElementById("tasksContainer")
-  
-  if (tasks.length === 0) {
-    container.innerHTML = '<p class="text-gray-500">Hozircha vazifalar yo\'q</p>'
-    return
-  }
-
-  container.innerHTML = `
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      ${tasks
-        .map(
-          (task) => `
-        <div class="bg-white border rounded-lg p-6 hover:shadow-md transition-shadow">
-          <div class="flex justify-between items-start mb-4">
-            <h3 class="text-lg font-semibold text-gray-800">${task.title}</h3>
-            <span class="px-2 py-1 text-xs font-semibold rounded-full ${
-              task.status === "active" ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"
-            }">
-              ${task.status === "active" ? "Faol" : "Nofaol"}
-            </span>
-          </div>
-          
-          <p class="text-gray-600 text-sm mb-4">${task.description}</p>
-          
-          <div class="space-y-2 text-sm">
-            <div class="flex justify-between">
-              <span class="text-gray-500">Mukofot:</span>
-              <span class="font-medium">${task.reward} coin</span>
-            </div>
-            <div class="flex justify-between">
-              <span class="text-gray-500">Muddat:</span>
-              <span class="font-medium">${formatDate(task.deadline)}</span>
-            </div>
-            ${task.groupId ? `
-            <div class="flex justify-between">
-              <span class="text-gray-500">Guruh:</span>
-              <span class="font-medium">${getGroupName(task.groupId)}</span>
-            </div>
-            ` : ''}
-          </div>
-          
-          <div class="mt-4 flex space-x-2">
-            <button onclick="showTaskSubmissions('${task.id}')" class="flex-1 bg-blue-500 text-white py-2 px-3 rounded text-sm hover:bg-blue-600">
-              <i class="fas fa-eye mr-1"></i>Topshiriqlar
-            </button>
-            <button onclick="editTask('${task.id}')" class="bg-gray-500 text-white py-2 px-3 rounded text-sm hover:bg-gray-600">
-              <i class="fas fa-edit"></i>
-            </button>
-          </div>
-        </div>
-      `,
-        )
-        .join("")}
-    </div>
-  `
-}
-
-// Show create task modal
-function showCreateTaskModal() {
-  showModal("Yangi vazifa yaratish", `
-    <form onsubmit="createTask(event)">
-      <div class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Vazifa nomi *</label>
-          <input type="text" id="taskTitle" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Tavsif *</label>
-          <textarea id="taskDescription" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" rows="4" required></textarea>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Muddat *</label>
-          <input type="datetime-local" id="taskDeadline" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Mukofot (coin)</label>
-          <input type="number" id="taskReward" value="50" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Website havolasi (ixtiyoriy)</label>
-          <input type="url" id="taskWebsite" placeholder="https://example.com" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Kimga berish</label>
-          <select id="taskAssignType" onchange="toggleTaskAssignOptions()" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="all">Barcha o'quvchilarga</option>
-            <option value="group">Guruhga</option>
-            <option value="individual">Alohida o'quvchilarga</option>
-          </select>
-        </div>
-        
-        <div id="taskGroupSelect" class="hidden">
-          <label class="block text-sm font-medium text-gray-700 mb-2">Guruh tanlang</label>
-          <select id="taskGroup" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Guruh tanlang</option>
-            ${allGroups.map(group => `<option value="${group.id}">${group.name}</option>`).join('')}
-          </select>
-        </div>
-        
-        <div id="taskStudentSelect" class="hidden">
-          <label class="block text-sm font-medium text-gray-700 mb-2">O'quvchilar tanlang</label>
-          <div class="max-h-40 overflow-y-auto border border-gray-300 rounded-md p-2">
-            ${allStudents.map(student => `
-              <label class="flex items-center space-x-2 p-1">
-                <input type="checkbox" name="taskStudents" value="${student.id}" class="rounded">
-                <span class="text-sm">${student.name}</span>
-              </label>
-            `).join('')}
-          </div>
-        </div>
-        
-        <div class="flex space-x-3">
-          <button type="button" onclick="closeModal()" class="flex-1 bg-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-400">
-            Bekor qilish
-          </button>
-          <button type="submit" class="flex-1 bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">
-            Yaratish
-          </button>
-        </div>
-      </div>
-    </form>
-  `)
-}
-
-// Toggle task assign options
-function toggleTaskAssignOptions() {
-  const assignType = document.getElementById("taskAssignType").value
-  const groupSelect = document.getElementById("taskGroupSelect")
-  const studentSelect = document.getElementById("taskStudentSelect")
-  
-  groupSelect.classList.add("hidden")
-  studentSelect.classList.add("hidden")
-  
-  if (assignType === "group") {
-    groupSelect.classList.remove("hidden")
-  } else if (assignType === "individual") {
-    studentSelect.classList.remove("hidden")
-  }
-}
-
-// Create task
-async function createTask(event) {
-  event.preventDefault()
-  
-  try {
-    const title = document.getElementById("taskTitle").value.trim()
-    const description = document.getElementById("taskDescription").value.trim()
-    const deadline = document.getElementById("taskDeadline").value
-    const reward = parseInt(document.getElementById("taskReward").value) || 50
-    const websiteUrl = document.getElementById("taskWebsite").value.trim() || null
-    const assignType = document.getElementById("taskAssignType").value
-    
-    let groupId = null
-    let assignedStudents = null
-    
-    if (assignType === "group") {
-      groupId = document.getElementById("taskGroup").value || null
-    } else if (assignType === "individual") {
-      const selectedStudents = Array.from(document.querySelectorAll('input[name="taskStudents"]:checked'))
-        .map(cb => cb.value)
-      assignedStudents = selectedStudents.length > 0 ? selectedStudents : null
-    }
-    
-    await firebaseManager.createTask(title, description, deadline, reward, groupId, websiteUrl, assignedStudents)
-    showNotification("Vazifa muvaffaqiyatli yaratildi", "success")
-    closeModal()
-    await loadTasks()
-  } catch (error) {
-    console.error("Vazifa yaratishda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
-
-// Show task submissions
-async function showTaskSubmissions(taskId) {
-  try {
-    const task = allTasks.find(t => t.id === taskId)
+    const tasks = await firebaseManager.getArrayData("tasks")
     const submissions = await firebaseManager.getArrayData("submissions")
-    const taskSubmissions = submissions.filter(s => s.taskId === taskId)
-    
-    showModal(`"${task.title}" topshiriqlari`, `
-      <div class="space-y-4">
-        ${taskSubmissions.length === 0 ? 
-          '<p class="text-gray-500 text-center">Hozircha topshiriqlar yo\'q</p>' :
-          taskSubmissions.map(submission => {
-            const student = allStudents.find(s => s.id === submission.studentId)
-            return `
-              <div class="border rounded-lg p-4 ${submission.status === 'pending' ? 'bg-yellow-50' : submission.status === 'approved' ? 'bg-green-50' : 'bg-red-50'}">
-                <div class="flex justify-between items-start mb-3">
-                  <div>
-                    <h4 class="font-semibold">${student ? student.name : 'Noma\'lum'}</h4>
-                    <p class="text-sm text-gray-500">${formatDate(submission.submittedAt)}</p>
-                  </div>
-                  <span class="px-2 py-1 text-xs font-semibold rounded-full ${
-                    submission.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                    submission.status === 'approved' ? 'bg-green-100 text-green-800' :
-                    'bg-red-100 text-red-800'
-                  }">
-                    ${submission.status === 'pending' ? 'Kutilmoqda' : submission.status === 'approved' ? 'Qabul qilindi' : 'Rad etildi'}
-                  </span>
-                </div>
-                
-                <div class="mb-3">
-                  <p class="text-sm text-gray-700">${submission.description || 'Tavsif yo\'q'}</p>
-                </div>
-                
-                ${submission.status === 'pending' ? `
-                  <div class="flex space-x-2">
-                    <button onclick="showGradeSubmissionModal('${submission.id}', '${task.reward}')" class="bg-blue-500 text-white py-1 px-3 rounded text-sm hover:bg-blue-600">
-                      Baholash
-                    </button>
-                  </div>
-                ` : submission.feedback ? `
-                  <div class="mt-2 p-2 bg-gray-100 rounded">
-                    <p class="text-sm text-gray-600">Izoh: ${submission.feedback}</p>
-                    ${submission.reward ? `<p class="text-sm font-medium">Berilgan coin: ${submission.reward}</p>` : ''}
-                  </div>
-                ` : ''}
-              </div>
-            `
-          }).join('')
-        }
-      </div>
-    `)
-  } catch (error) {
-    console.error("Topshiriqlarni yuklashda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
+    const groups = await firebaseManager.getArrayData("groups")
 
-// Show grade submission modal
-function showGradeSubmissionModal(submissionId, defaultReward) {
-  showModal("Topshiriqni baholash", `
-    <form onsubmit="gradeSubmission(event, '${submissionId}')">
-      <div class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Coin miqdori</label>
-          <input type="number" id="submissionReward" value="${defaultReward}" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
-          <p class="text-xs text-gray-500 mt-1">0 coin = rad etish</p>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Izoh (ixtiyoriy)</label>
-          <textarea id="submissionFeedback" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" rows="3" placeholder="Izoh yozing..."></textarea>
-        </div>
-        
-        <div class="flex space-x-3">
-          <button type="button" onclick="closeModal()" class="flex-1 bg-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-400">
-            Bekor qilish
-          </button>
-          <button type="submit" class="flex-1 bg-green-500 text-white py-2 px-4 rounded hover:bg-green-600">
-            Baholash
-          </button>
-        </div>
-      </div>
-    </form>
-  `)
-}
-
-// Grade submission
-async function gradeSubmission(event, submissionId) {
-  event.preventDefault()
-  
-  try {
-    const reward = parseInt(document.getElementById("submissionReward").value)
-    const feedback = document.getElementById("submissionFeedback").value.trim()
-    
-    await firebaseManager.gradeSubmission(submissionId, reward, feedback)
-    showNotification("Topshiriq muvaffaqiyatli baholandi", "success")
-    closeModal()
-    // Refresh the submissions modal
-    const currentModal = document.querySelector('.modal-content')
-    if (currentModal) {
-      const taskId = currentModal.getAttribute('data-task-id')
-      if (taskId) {
-        await showTaskSubmissions(taskId)
-      }
+    // Get current user's updated info to ensure we have latest groupId
+    const users = await firebaseManager.getArrayData("users")
+    const currentUserData = users.find(u => u.id === currentUser.id)
+    if (currentUserData) {
+      currentUser.groupId = currentUserData.groupId
     }
-  } catch (error) {
-    console.error("Topshiriqni baholashda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
 
-// Load projects
-async function loadProjects() {
-  try {
-    allProjects = await firebaseManager.getArrayData("projects")
-    displayProjects(allProjects)
-  } catch (error) {
-    console.error("Loyihalarni yuklashda xatolik:", error)
-  }
-}
-
-// Display projects
-function displayProjects(projects) {
-  const container = document.getElementById("projectsContainer")
-  
-  if (projects.length === 0) {
-    container.innerHTML = '<p class="text-gray-500">Hozircha loyihalar yo\'q</p>'
-    return
-  }
-
-  container.innerHTML = `
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      ${projects
-        .map(
-          (project) => `
-        <div class="bg-white border rounded-lg p-6 hover:shadow-md transition-shadow">
-          <div class="flex justify-between items-start mb-4">
-            <h3 class="text-lg font-semibold text-gray-800">${project.title}</h3>
-            <span class="px-2 py-1 text-xs font-semibold rounded-full ${
-              project.status === "active" ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"
-            }">
-              ${project.status === "active" ? "Faol" : "Nofaol"}
-            </span>
-          </div>
-          
-          <p class="text-gray-600 text-sm mb-4">${project.description}</p>
-          
-          <div class="space-y-2 text-sm">
-            <div class="flex justify-between">
-              <span class="text-gray-500">To'lov:</span>
-              <span class="font-medium">${project.payment} coin</span>
-            </div>
-            <div class="flex justify-between">
-              <span class="text-gray-500">Muddat:</span>
-              <span class="font-medium">${formatDate(project.deadline)}</span>
-            </div>
-            ${project.groupId ? `
-            <div class="flex justify-between">
-              <span class="text-gray-500">Guruh:</span>
-              <span class="font-medium">${getGroupName(project.groupId)}</span>
-            </div>
-            ` : ''}
-          </div>
-          
-          <div class="mt-4 flex space-x-2">
-            <button onclick="showProjectSubmissions('${project.id}')" class="flex-1 bg-blue-500 text-white py-2 px-3 rounded text-sm hover:bg-blue-600">
-              <i class="fas fa-eye mr-1"></i>Topshiriqlar
-            </button>
-            <button onclick="editProject('${project.id}')" class="bg-gray-500 text-white py-2 px-3 rounded text-sm hover:bg-gray-600">
-              <i class="fas fa-edit"></i>
-            </button>
-          </div>
-        </div>
-      `,
-        )
-        .join("")}
-    </div>
-  `
-}
-
-// Show create project modal
-function showCreateProjectModal() {
-  showModal("Yangi loyiha yaratish", `
-    <form onsubmit="createProject(event)">
-      <div class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Loyiha nomi *</label>
-          <input type="text" id="projectTitle" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Tavsif *</label>
-          <textarea id="projectDescription" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" rows="4" required></textarea>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Muddat *</label>
-          <input type="datetime-local" id="projectDeadline" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">To'lov (coin)</label>
-          <input type="number" id="projectPayment" value="1000" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Website havolasi (ixtiyoriy)</label>
-          <input type="url" id="projectWebsite" placeholder="https://example.com" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Kimga berish</label>
-          <select id="projectAssignType" onchange="toggleProjectAssignOptions()" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="all">Barcha o'quvchilarga</option>
-            <option value="group">Guruhga</option>
-            <option value="individual">Alohida o'quvchilarga</option>
-          </select>
-        </div>
-        
-        <div id="projectGroupSelect" class="hidden">
-          <label class="block text-sm font-medium text-gray-700 mb-2">Guruh tanlang</label>
-          <select id="projectGroup" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Guruh tanlang</option>
-            ${allGroups.map(group => `<option value="${group.id}">${group.name}</option>`).join('')}
-          </select>
-        </div>
-        
-        <div id="projectStudentSelect" class="hidden">
-          <label class="block text-sm font-medium text-gray-700 mb-2">O'quvchilar tanlang</label>
-          <div class="max-h-40 overflow-y-auto border border-gray-300 rounded-md p-2">
-            ${allStudents.map(student => `
-              <label class="flex items-center space-x-2 p-1">
-                <input type="checkbox" name="projectStudents" value="${student.id}" class="rounded">
-                <span class="text-sm">${student.name}</span>
-              </label>
-            `).join('')}
-          </div>
-        </div>
-        
-        <div class="flex space-x-3">
-          <button type="button" onclick="closeModal()" class="flex-1 bg-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-400">
-            Bekor qilish
-          </button>
-          <button type="submit" class="flex-1 bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">
-            Yaratish
-          </button>
-        </div>
-      </div>
-    </form>
-  `)
-}
-
-// Toggle project assign options
-function toggleProjectAssignOptions() {
-  const assignType = document.getElementById("projectAssignType").value
-  const groupSelect = document.getElementById("projectGroupSelect")
-  const studentSelect = document.getElementById("projectStudentSelect")
-  
-  groupSelect.classList.add("hidden")
-  studentSelect.classList.add("hidden")
-  
-  if (assignType === "group") {
-    groupSelect.classList.remove("hidden")
-  } else if (assignType === "individual") {
-    studentSelect.classList.remove("hidden")
-  }
-}
-
-// Create project
-async function createProject(event) {
-  event.preventDefault()
-  
-  try {
-    const title = document.getElementById("projectTitle").value.trim()
-    const description = document.getElementById("projectDescription").value.trim()
-    const deadline = document.getElementById("projectDeadline").value
-    const payment = parseInt(document.getElementById("projectPayment").value) || 1000
-    const websiteUrl = document.getElementById("projectWebsite").value.trim() || null
-    const assignType = document.getElementById("projectAssignType").value
-    
-    let groupId = null
-    let assignedStudents = null
-    
-    if (assignType === "group") {
-      groupId = document.getElementById("projectGroup").value || null
-    } else if (assignType === "individual") {
-      const selectedStudents = Array.from(document.querySelectorAll('input[name="projectStudents"]:checked'))
-        .map(cb => cb.value)
-      assignedStudents = selectedStudents.length > 0 ? selectedStudents : null
-    }
-    
-    await firebaseManager.createProject(title, description, deadline, payment, groupId, assignedStudents, websiteUrl)
-    showNotification("Loyiha muvaffaqiyatli yaratildi", "success")
-    closeModal()
-    await loadProjects()
-  } catch (error) {
-    console.error("Loyiha yaratishda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
-
-// Show project submissions
-async function showProjectSubmissions(projectId) {
-  try {
-    const project = allProjects.find(p => p.id === projectId)
-    const submissions = await firebaseManager.getArrayData("projectSubmissions")
-    const projectSubmissions = submissions.filter(s => s.projectId === projectId)
-    
-    showModal(`"${project.title}" topshiriqlari`, `
-      <div class="space-y-4">
-        ${projectSubmissions.length === 0 ? 
-          '<p class="text-gray-500 text-center">Hozircha topshiriqlar yo\'q</p>' :
-          projectSubmissions.map(submission => {
-            const student = allStudents.find(s => s.id === submission.studentId)
-            return `
-              <div class="border rounded-lg p-4 ${submission.status === 'pending' ? 'bg-yellow-50' : submission.status === 'approved' ? 'bg-green-50' : 'bg-red-50'}">
-                <div class="flex justify-between items-start mb-3">
-                  <div>
-                    <h4 class="font-semibold">${student ? student.name : 'Noma\'lum'}</h4>
-                    <p class="text-sm text-gray-500">${formatDate(submission.submittedAt)}</p>
-                  </div>
-                  <span class="px-2 py-1 text-xs font-semibold rounded-full ${
-                    submission.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                    submission.status === 'approved' ? 'bg-green-100 text-green-800' :
-                    'bg-red-100 text-red-800'
-                  }">
-                    ${submission.status === 'pending' ? 'Kutilmoqda' : submission.status === 'approved' ? 'Qabul qilindi' : 'Rad etildi'}
-                  </span>
-                </div>
-                
-                <div class="mb-3">
-                  <p class="text-sm text-gray-700">${submission.description || 'Tavsif yo\'q'}</p>
-                </div>
-                
-                ${submission.status === 'pending' ? `
-                  <div class="flex space-x-2">
-                    <button onclick="showGradeProjectModal('${submission.id}', '${project.payment}')" class="bg-blue-500 text-white py-1 px-3 rounded text-sm hover:bg-blue-600">
-                      Baholash
-                    </button>
-                  </div>
-                ` : submission.feedback ? `
-                  <div class="mt-2 p-2 bg-gray-100 rounded">
-                    <p class="text-sm text-gray-600">Izoh: ${submission.feedback}</p>
-                    ${submission.reward ? `<p class="text-sm font-medium">Berilgan coin: ${submission.reward}</p>` : ''}
-                  </div>
-                ` : ''}
-              </div>
-            `
-          }).join('')
-        }
-      </div>
-    `)
-  } catch (error) {
-    console.error("Loyiha topshiriqlarini yuklashda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
-
-// Show grade project modal
-function showGradeProjectModal(submissionId, defaultPayment) {
-  showModal("Loyihani baholash", `
-    <form onsubmit="gradeProject(event, '${submissionId}')">
-      <div class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Coin miqdori</label>
-          <input type="number" id="projectReward" value="${defaultPayment}" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
-          <p class="text-xs text-gray-500 mt-1">0 coin = rad etish</p>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Izoh (ixtiyoriy)</label>
-          <textarea id="projectFeedback" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" rows="3" placeholder="Izoh yozing..."></textarea>
-        </div>
-        
-        <div class="flex space-x-3">
-          <button type="button" onclick="closeModal()" class="flex-1 bg-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-400">
-            Bekor qilish
-          </button>
-          <button type="submit" class="flex-1 bg-green-500 text-white py-2 px-4 rounded hover:bg-green-600">
-            Baholash
-          </button>
-        </div>
-      </div>
-    </form>
-  `)
-}
-
-// Grade project
-async function gradeProject(event, submissionId) {
-  event.preventDefault()
-  
-  try {
-    const reward = parseInt(document.getElementById("projectReward").value)
-    const feedback = document.getElementById("projectFeedback").value.trim()
-    
-    await firebaseManager.gradeProjectSubmission(submissionId, reward, feedback)
-    showNotification("Loyiha muvaffaqiyatli baholandi", "success")
-    closeModal()
-  } catch (error) {
-    console.error("Loyihani baholashda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
-
-// Load groups
-async function loadGroups() {
-  try {
-    allGroups = await firebaseManager.getArrayData("groups")
-    displayGroups(allGroups)
-  } catch (error) {
-    console.error("Guruhlarni yuklashda xatolik:", error)
-  }
-}
-
-// Display groups
-function displayGroups(groups) {
-  const container = document.getElementById("groupsContainer")
-  
-  if (groups.length === 0) {
-    container.innerHTML = '<p class="text-gray-500">Hozircha guruhlar yo\'q</p>'
-    return
-  }
-
-  container.innerHTML = `
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      ${groups
-        .map(
-          (group) => `
-        <div class="bg-white border rounded-lg p-6 hover:shadow-md transition-shadow">
-          <div class="flex justify-between items-start mb-4">
-            <h3 class="text-lg font-semibold text-gray-800">${group.name}</h3>
-            <span class="px-2 py-1 text-xs font-semibold rounded-full bg-blue-100 text-blue-800">
-              ${group.studentCount || 0} o'quvchi
-            </span>
-          </div>
-          
-          <p class="text-gray-600 text-sm mb-4">${group.description}</p>
-          
-          <div class="space-y-2 text-sm">
-            <div class="flex justify-between">
-              <span class="text-gray-500">Yaratilgan:</span>
-              <span class="font-medium">${formatDate(group.createdAt)}</span>
-            </div>
-          </div>
-          
-          <div class="mt-4 flex space-x-2">
-            <button onclick="showGroupStudents('${group.id}')" class="flex-1 bg-blue-500 text-white py-2 px-3 rounded text-sm hover:bg-blue-600">
-              <i class="fas fa-users mr-1"></i>O'quvchilar
-            </button>
-            <button onclick="editGroup('${group.id}')" class="bg-gray-500 text-white py-2 px-3 rounded text-sm hover:bg-gray-600">
-              <i class="fas fa-edit"></i>
-            </button>
-          </div>
-        </div>
-      `,
-        )
-        .join("")}
-    </div>
-  `
-}
-
-// Show create group modal
-function showCreateGroupModal() {
-  showModal("Yangi guruh yaratish", `
-    <form onsubmit="createGroup(event)">
-      <div class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Guruh nomi *</label>
-          <input type="text" id="groupName" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Tavsif</label>
-          <textarea id="groupDescription" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" rows="3"></textarea>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">O'quvchilar tanlang</label>
-          <div class="max-h-60 overflow-y-auto border border-gray-300 rounded-md p-2">
-            ${allStudents.map(student => `
-              <label class="flex items-center space-x-2 p-1">
-                <input type="checkbox" name="groupStudents" value="${student.id}" class="rounded">
-                <span class="text-sm">${student.name}</span>
-              </label>
-            `).join('')}
-          </div>
-        </div>
-        
-        <div class="flex space-x-3">
-          <button type="button" onclick="closeModal()" class="flex-1 bg-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-400">
-            Bekor qilish
-          </button>
-          <button type="submit" class="flex-1 bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">
-            Yaratish
-          </button>
-        </div>
-      </div>
-    </form>
-  `)
-}
-
-// Create group
-async function createGroup(event) {
-  event.preventDefault()
-  
-  try {
-    const name = document.getElementById("groupName").value.trim()
-    const description = document.getElementById("groupDescription").value.trim()
-    const selectedStudents = Array.from(document.querySelectorAll('input[name="groupStudents"]:checked'))
-      .map(cb => cb.value)
-    
-    await firebaseManager.createGroup(name, description, selectedStudents)
-    showNotification("Guruh muvaffaqiyatli yaratildi", "success")
-    closeModal()
-    await loadGroups()
-    await loadStudents() // Refresh students to show group assignments
-  } catch (error) {
-    console.error("Guruh yaratishda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
-
-// Load payments
-async function loadPayments() {
-  try {
-    const payments = await firebaseManager.getArrayData("monthlyPayments")
-    const withdrawals = await firebaseManager.getArrayData("withdrawalRequests")
-    
-    displayPayments(payments)
-    displayWithdrawals(withdrawals)
-  } catch (error) {
-    console.error("To'lovlarni yuklashda xatolik:", error)
-  }
-}
-
-// Display payments
-function displayPayments(payments) {
-  const container = document.getElementById("paymentsContainer")
-  
-  if (payments.length === 0) {
-    container.innerHTML = '<p class="text-gray-500">Hozircha to\'lovlar yo\'q</p>'
-    return
-  }
-
-  container.innerHTML = `
-    <div class="space-y-4">
-      ${payments
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-        .slice(0, 10)
-        .map(payment => {
-          const student = allStudents.find(s => s.id === payment.studentId)
-          return `
-            <div class="border rounded-lg p-4 ${payment.status === 'paid' ? 'bg-green-50' : payment.status === 'partial' ? 'bg-yellow-50' : 'bg-red-50'}">
-              <div class="flex justify-between items-start">
-                <div>
-                  <h4 class="font-semibold">${student ? student.name : 'Noma\'lum'}</h4>
-                  <p class="text-sm text-gray-600">${payment.description}</p>
-                  <p class="text-sm text-gray-500">${formatDate(payment.createdAt)}</p>
-                </div>
-                <div class="text-right">
-                  <p class="font-semibold">${payment.amount.toLocaleString()} so'm</p>
-                  <span class="px-2 py-1 text-xs font-semibold rounded-full ${
-                    payment.status === 'paid' ? 'bg-green-100 text-green-800' :
-                    payment.status === 'partial' ? 'bg-yellow-100 text-yellow-800' :
-                    'bg-red-100 text-red-800'
-                  }">
-                    ${payment.status === 'paid' ? 'To\'langan' : payment.status === 'partial' ? 'Qisman' : 'Kutilmoqda'}
-                  </span>
-                </div>
-              </div>
-              
-              ${payment.status === 'pending' ? `
-                <div class="mt-3 flex space-x-2">
-                  <button onclick="confirmPayment('${payment.id}', '${payment.studentId}')" class="bg-green-500 text-white py-1 px-3 rounded text-sm hover:bg-green-600">
-                    Tasdiqlash
-                  </button>
-                </div>
-              ` : ''}
-            </div>
-          `
-        }).join('')}
-    </div>
-  `
-}
-
-// Display withdrawals
-function displayWithdrawals(withdrawals) {
-  const container = document.getElementById("withdrawalsContainer")
-  
-  if (withdrawals.length === 0) {
-    container.innerHTML = '<p class="text-gray-500">Hozircha so\'rovlar yo\'q</p>'
-    return
-  }
-
-  container.innerHTML = `
-    <div class="space-y-4">
-      ${withdrawals
-        .filter(w => w.status === 'pending')
-        .sort((a, b) => new Date(b.requestedAt) - new Date(a.requestedAt))
-        .map(withdrawal => `
-          <div class="border rounded-lg p-4 bg-yellow-50">
-            <div class="flex justify-between items-start mb-3">
-              <div>
-                <h4 class="font-semibold">${withdrawal.studentName}</h4>
-                <p class="text-sm text-gray-500">${formatDate(withdrawal.requestedAt)}</p>
-              </div>
-              <div class="text-right">
-                <p class="font-semibold">${withdrawal.coins.toLocaleString()} coin</p>
-                <p class="text-sm text-gray-600">${withdrawal.amount.toLocaleString()} so'm</p>
-              </div>
-            </div>
-            
-            <div class="text-sm text-gray-600 mb-3">
-              <p>Karta: ${withdrawal.cardNumber}</p>
-              <p>Usul: ${withdrawal.method}</p>
-            </div>
-            
-            <div class="flex space-x-2">
-              <button onclick="approveWithdrawal('${withdrawal.id}')" class="bg-green-500 text-white py-1 px-3 rounded text-sm hover:bg-green-600">
-                Tasdiqlash
-              </button>
-              <button onclick="rejectWithdrawal('${withdrawal.id}')" class="bg-red-500 text-white py-1 px-3 rounded text-sm hover:bg-red-600">
-                Rad etish
-              </button>
-            </div>
-          </div>
-        `).join('')}
-    </div>
-  `
-}
-
-// Confirm payment
-async function confirmPayment(paymentId, studentId) {
-  try {
-    await firebaseManager.confirmPayment(paymentId, studentId)
-    showNotification("To'lov tasdiqlandi", "success")
-    await loadPayments()
-    await loadStudents()
-  } catch (error) {
-    console.error("To'lovni tasdiqlashda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
-
-// Approve withdrawal
-async function approveWithdrawal(requestId) {
-  try {
-    await firebaseManager.approveWithdrawal(requestId)
-    showNotification("Pul yechish so'rovi tasdiqlandi", "success")
-    await loadPayments()
-    await loadStudents()
-  } catch (error) {
-    console.error("Pul yechish so'rovini tasdiqlashda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
-
-// Load referrals
-async function loadReferrals() {
-  try {
-    const referrals = await firebaseManager.getArrayData("referrals")
-    displayReferrals(referrals)
-  } catch (error) {
-    console.error("Referallarni yuklashda xatolik:", error)
-  }
-}
-
-// Display referrals
-function displayReferrals(referrals) {
-  const container = document.getElementById("referralsContainer")
-  
-  const pendingReferrals = referrals.filter(r => r.status === 'pending')
-  
-  if (pendingReferrals.length === 0) {
-    container.innerHTML = '<p class="text-gray-500">Hozircha kutilayotgan referal so\'rovlari yo\'q</p>'
-    return
-  }
-
-  container.innerHTML = `
-    <div class="space-y-4">
-      ${pendingReferrals.map(referral => `
-        <div class="border rounded-lg p-4 bg-blue-50">
-          <div class="flex justify-between items-start mb-3">
-            <div>
-              <h4 class="font-semibold">${referral.referrerName}</h4>
-              <p class="text-sm text-gray-600">Taklif qildi: ${referral.newUserName}</p>
-              <p class="text-sm text-gray-500">${formatDate(referral.requestedAt)}</p>
-            </div>
-            <span class="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">
-              Kutilmoqda
-            </span>
-          </div>
-          
-          <div class="text-sm text-gray-600 mb-3">
-            <p>Email: ${referral.newUserEmail}</p>
-            <p>Referal kod: ${referral.referralCode}</p>
-          </div>
-          
-          <div class="flex space-x-2">
-            <button onclick="approveReferral('${referral.id}')" class="bg-green-500 text-white py-1 px-3 rounded text-sm hover:bg-green-600">
-              Tasdiqlash (20,000 coin)
-            </button>
-            <button onclick="rejectReferral('${referral.id}')" class="bg-red-500 text-white py-1 px-3 rounded text-sm hover:bg-red-600">
-              Rad etish
-            </button>
-          </div>
-        </div>
-      `).join('')}
-    </div>
-  `
-}
-
-// Approve referral
-async function approveReferral(referralId) {
-  try {
-    await firebaseManager.approveReferral(referralId)
-    showNotification("Referal so'rovi tasdiqlandi", "success")
-    await loadReferrals()
-    await loadStudents()
-  } catch (error) {
-    console.error("Referalni tasdiqlashda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
-
-// Reject referral
-async function rejectReferral(referralId) {
-  const reason = prompt("Rad etish sababini kiriting:")
-  if (!reason) return
-  
-  try {
-    await firebaseManager.rejectReferral(referralId, reason)
-    showNotification("Referal so'rovi rad etildi", "success")
-    await loadReferrals()
-  } catch (error) {
-    console.error("Referalni rad etishda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
-  }
-}
-
-// Load attendance
-async function loadAttendance() {
-  try {
-    const attendanceRecords = await firebaseManager.getArrayData("attendanceRecords")
-    displayAttendance(attendanceRecords)
-  } catch (error) {
-    console.error("Davomatni yuklashda xatolik:", error)
-  }
-}
-
-// Display attendance
-function displayAttendance(records) {
-  const container = document.getElementById("attendanceContainer")
-  
-  if (records.length === 0) {
-    container.innerHTML = '<p class="text-gray-500">Hozircha davomat yozuvlari yo\'q</p>'
-    return
-  }
-
-  container.innerHTML = `
-    <div class="space-y-4">
-      ${records
-        .sort((a, b) => new Date(b.date) - new Date(a.date))
-        .slice(0, 10)
-        .map(record => {
-          const group = allGroups.find(g => g.id === record.groupId)
-          const attendanceCount = Object.values(record.attendanceData).filter(Boolean).length
-          const totalCount = Object.keys(record.attendanceData).length
-          
-          return `
-            <div class="border rounded-lg p-4 bg-white">
-              <div class="flex justify-between items-start mb-3">
-                <div>
-                  <h4 class="font-semibold">${group ? group.name : 'Noma\'lum guruh'}</h4>
-                  <p class="text-sm text-gray-500">${formatDate(record.date)}</p>
-                </div>
-                <div class="text-right">
-                  <p class="font-semibold">${attendanceCount}/${totalCount}</p>
-                  <p class="text-sm text-gray-600">Ishtirok etdi</p>
-                </div>
-              </div>
-              
-              <div class="text-sm text-gray-600">
-                <p>Belgilangan: ${formatDate(record.markedAt)}</p>
-              </div>
-            </div>
-          `
-        }).join('')}
-    </div>
-  `
-}
-
-// Load tests
-async function loadTests() {
-  try {
-    allTests = await firebaseManager.getArrayData("tests")
-    displayTests(allTests)
-  } catch (error) {
-    console.error("Testlarni yuklashda xatolik:", error)
-  }
-}
-
-// Display tests
-function displayTests(tests) {
-  const container = document.getElementById("testsContainer")
-  
-  if (tests.length === 0) {
-    container.innerHTML = '<p class="text-gray-500">Hozircha testlar yo\'q</p>'
-    return
-  }
-
-  container.innerHTML = `
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      ${tests
-        .map(
-          (test) => `
-        <div class="bg-white border rounded-lg p-6 hover:shadow-md transition-shadow">
-          <div class="flex justify-between items-start mb-4">
-            <h3 class="text-lg font-semibold text-gray-800">${test.title}</h3>
-            <span class="px-2 py-1 text-xs font-semibold rounded-full ${
-              test.status === "active" ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"
-            }">
-              ${test.status === "active" ? "Faol" : "Nofaol"}
-            </span>
-          </div>
-          
-          <p class="text-gray-600 text-sm mb-4">${test.description}</p>
-          
-          <div class="space-y-2 text-sm">
-            <div class="flex justify-between">
-              <span class="text-gray-500">Savollar:</span>
-              <span class="font-medium">${test.questions.length} ta</span>
-            </div>
-            <div class="flex justify-between">
-              <span class="text-gray-500">Vaqt:</span>
-              <span class="font-medium">${test.timeLimit} daqiqa</span>
-            </div>
-            ${test.groupId ? `
-            <div class="flex justify-between">
-              <span class="text-gray-500">Guruh:</span>
-              <span class="font-medium">${getGroupName(test.groupId)}</span>
-            </div>
-            ` : ''}
-          </div>
-          
-          <div class="mt-4 flex space-x-2">
-            <button onclick="showTestResults('${test.id}')" class="flex-1 bg-blue-500 text-white py-2 px-3 rounded text-sm hover:bg-blue-600">
-              <i class="fas fa-chart-bar mr-1"></i>Natijalar
-            </button>
-            <button onclick="editTest('${test.id}')" class="bg-gray-500 text-white py-2 px-3 rounded text-sm hover:bg-gray-600">
-              <i class="fas fa-edit"></i>
-            </button>
-          </div>
-        </div>
-      `,
-        )
-        .join("")}
-    </div>
-  `
-}
-
-// Show create test modal
-function showCreateTestModal() {
-  showModal("Yangi test yaratish", `
-    <form onsubmit="createTest(event)">
-      <div class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Test nomi *</label>
-          <input type="text" id="testTitle" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Tavsif</label>
-          <textarea id="testDescription" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" rows="3"></textarea>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Vaqt limiti (daqiqa)</label>
-          <input type="number" id="testTimeLimit" value="30" min="1" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Kimga berish</label>
-          <select id="testAssignType" onchange="toggleTestAssignOptions()" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="all">Barcha o'quvchilarga</option>
-            <option value="group">Guruhga</option>
-            <option value="individual">Alohida o'quvchilarga</option>
-          </select>
-        </div>
-        
-        <div id="testGroupSelect" class="hidden">
-          <label class="block text-sm font-medium text-gray-700 mb-2">Guruh tanlang</label>
-          <select id="testGroup" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Guruh tanlang</option>
-            ${allGroups.map(group => `<option value="${group.id}">${group.name}</option>`).join('')}
-          </select>
-        </div>
-        
-        <div id="testStudentSelect" class="hidden">
-          <label class="block text-sm font-medium text-gray-700 mb-2">O'quvchilar tanlang</label>
-          <div class="max-h-40 overflow-y-auto border border-gray-300 rounded-md p-2">
-            ${allStudents.map(student => `
-              <label class="flex items-center space-x-2 p-1">
-                <input type="checkbox" name="testStudents" value="${student.id}" class="rounded">
-                <span class="text-sm">${student.name}</span>
-              </label>
-            `).join('')}
-          </div>
-        </div>
-        
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">Savollar</label>
-          <div id="questionsContainer">
-            <div class="question-item border rounded p-3 mb-3">
-              <div class="mb-2">
-                <input type="text" placeholder="Savol matni" class="w-full px-3 py-2 border border-gray-300 rounded-md question-text" required>
-              </div>
-              <div class="space-y-1">
-                <input type="text" placeholder="A) Variant" class="w-full px-2 py-1 border border-gray-300 rounded option-input" required>
-                <input type="text" placeholder="B) Variant" class="w-full px-2 py-1 border border-gray-300 rounded option-input" required>
-                <input type="text" placeholder="C) Variant" class="w-full px-2 py-1 border border-gray-300 rounded option-input" required>
-                <input type="text" placeholder="D) Variant" class="w-full px-2 py-1 border border-gray-300 rounded option-input" required>
-              </div>
-              <div class="mt-2">
-                <select class="correct-answer w-full px-2 py-1 border border-gray-300 rounded" required>
-                  <option value="">To'g'ri javobni tanlang</option>
-                  <option value="0">A</option>
-                  <option value="1">B</option>
-                  <option value="2">C</option>
-                  <option value="3">D</option>
-                </select>
-              </div>
-            </div>
-          </div>
-          <button type="button" onclick="addQuestion()" class="bg-green-500 text-white py-1 px-3 rounded text-sm hover:bg-green-600">
-            <i class="fas fa-plus mr-1"></i>Savol qo'shish
-          </button>
-        </div>
-        
-        <div class="flex space-x-3">
-          <button type="button" onclick="closeModal()" class="flex-1 bg-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-400">
-            Bekor qilish
-          </button>
-          <button type="submit" class="flex-1 bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">
-            Yaratish
-          </button>
-        </div>
-      </div>
-    </form>
-  `)
-}
-
-// Toggle test assign options
-function toggleTestAssignOptions() {
-  const assignType = document.getElementById("testAssignType").value
-  const groupSelect = document.getElementById("testGroupSelect")
-  const studentSelect = document.getElementById("testStudentSelect")
-  
-  groupSelect.classList.add("hidden")
-  studentSelect.classList.add("hidden")
-  
-  if (assignType === "group") {
-    groupSelect.classList.remove("hidden")
-  } else if (assignType === "individual") {
-    studentSelect.classList.remove("hidden")
-  }
-}
-
-// Add question
-function addQuestion() {
-  const container = document.getElementById("questionsContainer")
-  const questionDiv = document.createElement("div")
-  questionDiv.className = "question-item border rounded p-3 mb-3"
-  questionDiv.innerHTML = `
-    <div class="mb-2">
-      <input type="text" placeholder="Savol matni" class="w-full px-3 py-2 border border-gray-300 rounded-md question-text" required>
-    </div>
-    <div class="space-y-1">
-      <input type="text" placeholder="A) Variant" class="w-full px-2 py-1 border border-gray-300 rounded option-input" required>
-      <input type="text" placeholder="B) Variant" class="w-full px-2 py-1 border border-gray-300 rounded option-input" required>
-      <input type="text" placeholder="C) Variant" class="w-full px-2 py-1 border border-gray-300 rounded option-input" required>
-      <input type="text" placeholder="D) Variant" class="w-full px-2 py-1 border border-gray-300 rounded option-input" required>
-    </div>
-    <div class="mt-2 flex justify-between items-center">
-      <select class="correct-answer flex-1 px-2 py-1 border border-gray-300 rounded mr-2" required>
-        <option value="">To'g'ri javobni tanlang</option>
-        <option value="0">A</option>
-        <option value="1">B</option>
-        <option value="2">C</option>
-        <option value="3">D</option>
-      </select>
-      <button type="button" onclick="removeQuestion(this)" class="bg-red-500 text-white py-1 px-2 rounded text-sm hover:bg-red-600">
-        <i class="fas fa-trash"></i>
-      </button>
-    </div>
-  `
-  container.appendChild(questionDiv)
-}
-
-// Remove question
-function removeQuestion(button) {
-  button.closest(".question-item").remove()
-}
-
-// Create test
-async function createTest(event) {
-  event.preventDefault()
-  
-  try {
-    const title = document.getElementById("testTitle").value.trim()
-    const description = document.getElementById("testDescription").value.trim()
-    const timeLimit = parseInt(document.getElementById("testTimeLimit").value) || 30
-    const assignType = document.getElementById("testAssignType").value
-    
-    let groupId = null
-    let assignedStudents = null
-    
-    if (assignType === "group") {
-      groupId = document.getElementById("testGroup").value || null
-    } else if (assignType === "individual") {
-      const selectedStudents = Array.from(document.querySelectorAll('input[name="testStudents"]:checked'))
-        .map(cb => cb.value)
-      assignedStudents = selectedStudents.length > 0 ? selectedStudents : null
-    }
-    
-    // Collect questions
-    const questionItems = document.querySelectorAll(".question-item")
-    const questions = []
-    
-    questionItems.forEach(item => {
-      const questionText = item.querySelector(".question-text").value.trim()
-      const options = Array.from(item.querySelectorAll(".option-input")).map(input => input.value.trim())
-      const correctAnswer = parseInt(item.querySelector(".correct-answer").value)
+    // Get tasks assigned to user or their group
+    const myTasks = tasks.filter((task) => {
+      if (task.status !== "active") return false
       
-      if (questionText && options.every(opt => opt) && correctAnswer !== undefined) {
-        questions.push({
-          question: questionText,
-          options: options,
-          correctAnswer: correctAnswer
-        })
+      // Check if task is assigned directly to user
+      if (task.assignedTo && task.assignedTo.includes(currentUser.id)) return true
+      
+      // Check if task is assigned to user's group
+      if (currentUser.groupId) {
+        // Check if task has assignedGroups array and includes user's group
+        if (task.assignedGroups && task.assignedGroups.includes(currentUser.groupId)) return true
+        
+        // Also check if task was assigned to "group" type and matches user's group
+        if (task.assignmentType === "group" && task.groupId === currentUser.groupId) return true
+        
+        // Check if user's group members are in assignedTo array (for backward compatibility)
+        if (task.assignmentType === "group" && task.assignedTo) {
+          const groupMembers = users.filter(u => u.groupId === currentUser.groupId).map(u => u.id)
+          return task.assignedTo.some(id => groupMembers.includes(id))
+        }
       }
+      
+      // Check if task is assigned to all students
+      if (task.assignmentType === "all") return true
+      
+      return false
     })
-    
-    if (questions.length === 0) {
-      alert("Kamida bitta savol qo'shing!")
+
+    const tasksList = document.getElementById("tasksList")
+    tasksList.innerHTML = ""
+
+    if (myTasks.length === 0) {
+      tasksList.innerHTML = '<p class="text-gray-500 text-center py-8">Hozircha vazifalar yo\'q</p>'
       return
     }
-    
-    await firebaseManager.createTest(title, description, questions, timeLimit, groupId, assignedStudents)
-    showNotification("Test muvaffaqiyatli yaratildi", "success")
-    closeModal()
-    await loadTests()
+
+    myTasks.forEach((task, index) => {
+      const deadline = new Date(task.deadline)
+      const now = new Date()
+      const isOverdue = deadline < now
+      const mySubmission = submissions.find((s) => s.taskId === task.id && s.studentId === currentUser.id)
+
+      const taskElement = document.createElement("div")
+      taskElement.className = `border rounded-lg p-4 ${isOverdue ? "border-red-300 bg-red-50" : "border-gray-200"}`
+      
+      const timerId = `timer-${task.id}`
+      
+      taskElement.innerHTML = `
+        <div class="flex flex-col sm:flex-row justify-between items-start mb-2 gap-4">
+          <h3 class="font-semibold text-lg">${task.title}</h3>
+          <div class="text-right">
+            <div id="${timerId}" class="text-sm px-2 py-1 rounded-full bg-blue-100 mb-1">
+              <!-- Timer will be inserted here -->
+            </div>
+            ${mySubmission && mySubmission.status === "approved" ? `<div class="text-sm text-green-600 font-medium">${mySubmission.points || task.reward || 50} coin olindi</div>` : ""}
+          </div>
+        </div>
+        <p class="text-gray-700 mb-3">${task.description}</p>
+        ${task.link ? `<p class="text-sm mb-3"><a href="${task.link}" target="_blank" class="text-blue-600 hover:underline break-all">Vazifa havolasi</a></p>` : ""}
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <span class="text-sm text-gray-500">Muddat: ${deadline.toLocaleDateString("uz-UZ")} ${deadline.toLocaleTimeString("uz-UZ", {hour: '2-digit', minute: '2-digit'})}</span>
+          ${
+            mySubmission
+              ? `
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="px-2 py-1 rounded-full text-xs ${
+                mySubmission.status === "approved"
+                  ? "bg-green-100 text-green-800"
+                  : mySubmission.status === "rejected"
+                    ? "bg-red-100 text-red-800"
+                    : "bg-yellow-100 text-yellow-800"
+              }">
+                ${
+                  mySubmission.status === "approved"
+                    ? "Tasdiqlangan"
+                    : mySubmission.status === "rejected"
+                      ? "Rad etilgan"
+                      : "Kutilmoqda"
+                }
+              </span>
+              ${mySubmission.feedback ? `<div class="text-xs text-red-600">Izoh: ${mySubmission.feedback}</div>` : ""}
+            </div>
+          `
+              : `
+            <button onclick="openTaskModal('${task.id}')" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">
+              Bajarish
+            </button>
+          `
+          }
+        </div>
+      `
+      tasksList.appendChild(taskElement)
+
+      // Start timer for this task
+      if (!isOverdue && !mySubmission) {
+        startTimer(timerId, task.deadline)
+      }
+    })
   } catch (error) {
-    console.error("Test yaratishda xatolik:", error)
-    showNotification("Xatolik yuz berdi", "error")
+    console.error("Vazifalarni yuklashda xatolik:", error)
+    document.getElementById("tasksList").innerHTML =
+      '<p class="text-red-500 text-center py-8">Ma\'lumotlarni yuklashda xatolik!</p>'
   }
 }
 
-// Utility functions
-function formatDate(dateString) {
-  const date = new Date(dateString)
-  return date.toLocaleDateString("uz-UZ", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+async function loadTests() {
+  try {
+    const tests = await firebaseManager.getArrayData("tests")
+    const testResults = await firebaseManager.getArrayData("testResults")
+
+    const testsList = document.getElementById("testsList")
+    testsList.innerHTML = ""
+
+    if (tests.length === 0) {
+      testsList.innerHTML = '<p class="text-gray-500 text-center py-8">Hozircha testlar yo\'q</p>'
+      return
+    }
+
+    tests.forEach((test) => {
+      const myResult = testResults.find((r) => r.testId === test.id && r.studentId === currentUser.id)
+
+      const testElement = document.createElement("div")
+      testElement.className = "border rounded-lg p-4"
+      testElement.innerHTML = `
+        <div class="flex justify-between items-start mb-2">
+          <h3 class="font-semibold text-lg">${test.title}</h3>
+          <span class="px-2 py-1 bg-green-100 text-green-800 rounded-full text-sm">${test.questions.length} savol</span>
+        </div>
+        <p class="text-gray-700 mb-3">${test.description}</p>
+        <div class="flex justify-between items-center">
+          ${
+            myResult
+              ? `<span class="text-sm text-gray-600">Natija: ${myResult.score}/${test.questions.length}</span>`
+              : `<span class="text-sm text-gray-600">Test bajarilmagan</span>`
+          }
+          ${
+            myResult
+              ? `<span class="px-2 py-1 bg-green-100 text-green-800 rounded-full text-xs">Bajarilgan</span>`
+              : `<button onclick="openTestModal('${test.id}')" class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700">
+              Testni boshlash
+            </button>`
+          }
+        </div>
+      `
+      testsList.appendChild(testElement)
+    })
+  } catch (error) {
+    console.error("Testlarni yuklashda xatolik:", error)
+    document.getElementById("testsList").innerHTML =
+      '<p class="text-red-500 text-center py-8">Ma\'lumotlarni yuklashda xatolik!</p>'
+  }
+}
+
+async function loadProjects() {
+  try {
+    const projects = await firebaseManager.getArrayData("projects")
+    const projectSubmissions = await firebaseManager.getArrayData("projectSubmissions")
+
+    // Get current user's updated info to ensure we have latest groupId
+    const users = await firebaseManager.getArrayData("users")
+    const currentUserData = users.find(u => u.id === currentUser.id)
+    if (currentUserData) {
+      currentUser.groupId = currentUserData.groupId
+    }
+
+    const myProjects = projects.filter((project) => {
+      // Check if project is assigned directly to user
+      if (project.assignedTo && project.assignedTo.includes(currentUser.id)) return true
+      
+      // Check if project is assigned to user's group
+      if (currentUser.groupId) {
+        // Check if project has assignedGroups array and includes user's group
+        if (project.assignedGroups && project.assignedGroups.includes(currentUser.groupId)) return true
+        
+        // Also check if project was assigned to "group" type and matches user's group
+        if (project.assignmentType === "group" && project.groupId === currentUser.groupId) return true
+        
+        // Check if user's group members are in assignedTo array (for backward compatibility)
+        if (project.assignmentType === "group" && project.assignedTo) {
+          const groupMembers = users.filter(u => u.groupId === currentUser.groupId).map(u => u.id)
+          return project.assignedTo.some(id => groupMembers.includes(id))
+        }
+      }
+      
+      // Check if project is assigned to all students
+      if (project.assignmentType === "all") return true
+      
+      return false
+    })
+
+    const projectsList = document.getElementById("projectsList")
+    projectsList.innerHTML = ""
+
+    if (myProjects.length === 0) {
+      projectsList.innerHTML = '<p class="text-gray-500 text-center py-8">Hozircha loyihalar yo\'q</p>'
+      return
+    }
+
+    myProjects.forEach((project) => {
+      const deadline = new Date(project.deadline)
+      const now = new Date()
+      const isOverdue = deadline < now
+      const mySubmission = projectSubmissions.find((s) => s.projectId === project.id && s.studentId === currentUser.id)
+
+      const projectElement = document.createElement("div")
+      projectElement.className = `border rounded-lg p-4 ${isOverdue ? "border-red-300 bg-red-50" : "border-gray-200"}`
+      
+      const timerId = `project-timer-${project.id}`
+      
+      projectElement.innerHTML = `
+        <div class="flex justify-between items-start mb-2">
+          <h3 class="font-semibold text-lg">${project.title}</h3>
+          <div class="text-right">
+            <div id="${timerId}" class="text-sm px-2 py-1 rounded-full bg-blue-100 mb-1">
+              <!-- Timer will be inserted here -->
+            </div>
+            <div class="text-sm text-purple-600 font-medium">${project.payment} coin</div>
+          </div>
+        </div>
+        <p class="text-gray-700 mb-3">${project.description}</p>
+        ${project.link ? `<p class="text-sm mb-3"><a href="${project.link}" target="_blank" class="text-blue-600 hover:underline break-all">Loyiha havolasi</a></p>` : ""}
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <span class="text-sm text-gray-500">Muddat: ${deadline.toLocaleDateString("uz-UZ")} ${deadline.toLocaleTimeString("uz-UZ", {hour: '2-digit', minute: '2-digit'})}</span>
+          ${
+            mySubmission
+              ? `
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="px-2 py-1 rounded-full text-xs ${
+                mySubmission.status === "approved"
+                  ? "bg-green-100 text-green-800"
+                  : mySubmission.status === "rejected"
+                    ? "bg-red-100 text-red-800"
+                    : "bg-yellow-100 text-yellow-800"
+              }">
+                ${
+                  mySubmission.status === "approved"
+                    ? "Tasdiqlangan"
+                    : mySubmission.status === "rejected"
+                      ? "Rad etilgan"
+                      : "Kutilmoqda"
+                }
+              </span>
+              ${mySubmission.feedback ? `<div class="text-xs text-red-600">Izoh: ${mySubmission.feedback}</div>` : ""}
+            </div>
+          `
+              : `
+            <button onclick="openProjectModal('${project.id}')" class="bg-purple-600 text-white px-4 py-2 rounded-md hover:bg-purple-700">
+              Topshirish
+            </button>
+          `
+          }
+        </div>
+      `
+      projectsList.appendChild(projectElement)
+
+      // Start timer for this project
+      if (!isOverdue && !mySubmission) {
+        startTimer(timerId, project.deadline)
+      }
+    })
+  } catch (error) {
+    console.error("Loyihalarni yuklashda xatolik:", error)
+    document.getElementById("projectsList").innerHTML =
+      '<p class="text-red-500 text-center py-8">Ma\'lumotlarni yuklashda xatolik!</p>'
+  }
+}
+
+async function loadChat() {
+  try {
+    const messages = await firebaseManager.getArrayData("chatMessages")
+    const chatMessages = document.getElementById("chatMessages")
+
+    chatMessages.innerHTML = ""
+
+    messages.forEach((message) => {
+      const messageElement = document.createElement("div")
+      messageElement.className = `mb-2 ${message.senderId === currentUser.id ? "text-right" : "text-left"}`
+
+      let messageContent = message.text
+      if (message.image) {
+        messageContent = `<img src="${message.image}" class="max-w-xs rounded-lg mb-2" alt="Rasm"><br>${message.text}`
+      }
+
+      messageElement.innerHTML = `
+        <div class="inline-block max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${
+          message.senderId === currentUser.id ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-800"
+        }">
+          <div class="text-xs opacity-75 mb-1">${message.senderName}</div>
+          <div>${messageContent}</div>
+          <div class="text-xs opacity-75 mt-1">${new Date(message.timestamp).toLocaleTimeString("uz-UZ")}</div>
+        </div>
+      `
+      chatMessages.appendChild(messageElement)
+    })
+
+    chatMessages.scrollTop = chatMessages.scrollHeight
+  } catch (error) {
+    console.error("Chatni yuklashda xatolik:", error)
+  }
+}
+
+async function loadLeaderboard() {
+  try {
+    const users = await firebaseManager.getArrayData("users")
+    let students = users.filter((u) => u.role === "student")
+
+    // Filter by group if user is in a group
+    if (currentUser.groupId) {
+      students = students.filter((s) => s.groupId === currentUser.groupId)
+    }
+
+    students.sort((a, b) => (b.rating || 0) - (a.rating || 0))
+
+    const leaderboardList = document.getElementById("leaderboardList")
+    leaderboardList.innerHTML = ""
+
+    students.forEach((student, index) => {
+      const isCurrentUser = student.id === currentUser.id
+      const balance = Math.floor((student.rating || 0) * 10)
+      const leaderboardItem = document.createElement("div")
+      leaderboardItem.className = `flex items-center justify-between p-3 rounded-lg ${
+        isCurrentUser ? "bg-blue-50 border-2 border-blue-200" : "bg-gray-50"
+      }`
+      leaderboardItem.innerHTML = `
+        <div class="flex items-center space-x-3">
+          <div class="w-8 h-8 rounded-full ${
+            index === 0 ? "bg-yellow-400" : index === 1 ? "bg-gray-400" : index === 2 ? "bg-orange-400" : "bg-gray-300"
+          } flex items-center justify-center text-white font-bold">
+            ${index + 1}
+          </div>
+          <div>
+            <div class="font-medium ${isCurrentUser ? "text-blue-800" : "text-gray-800"}">${student.name}</div>
+            <div class="text-sm text-gray-600">${student.email}</div>
+            <div class="text-xs ${balance >= 0 ? "text-green-600" : "text-red-600"}">${balance.toLocaleString()} so'm</div>
+          </div>
+        </div>
+        <div class="text-lg font-bold ${isCurrentUser ? ((student.rating || 0) >= 0 ? "text-blue-600" : "text-red-600") : (student.rating || 0) >= 0 ? "text-gray-800" : "text-red-600"}">
+          ${student.rating || 0} coin
+        </div>
+      `
+      leaderboardList.appendChild(leaderboardItem)
+    })
+  } catch (error) {
+    console.error("Reytingni yuklashda xatolik:", error)
+  }
+}
+
+async function loadNotifications() {
+  try {
+    const notifications = await firebaseManager.getArrayData("notifications")
+    const myNotifications = notifications.filter((n) => n.userId === currentUser.id)
+    const unreadCount = myNotifications.filter((n) => !n.read).length
+
+    // Update badge
+    const badge = document.getElementById("notificationBadge")
+    if (unreadCount > 0) {
+      badge.textContent = unreadCount
+      badge.classList.remove("hidden")
+    } else {
+      badge.classList.add("hidden")
+    }
+
+    // Load notification list
+    const notificationList = document.getElementById("notificationList")
+    notificationList.innerHTML = ""
+
+    if (myNotifications.length === 0) {
+      notificationList.innerHTML = '<p class="text-gray-500 text-center py-4">Bildirishnomalar yo\'q</p>'
+      return
+    }
+
+    myNotifications
+      .slice(-10)
+      .reverse()
+      .forEach((notification) => {
+        const notificationItem = document.createElement("div")
+        notificationItem.className = `p-3 border-b hover:bg-gray-50 ${!notification.read ? "bg-blue-50" : ""}`
+        notificationItem.innerHTML = `
+        <div class="flex items-start space-x-3">
+          <i class="fas ${getNotificationIcon(notification.type)} text-blue-600 mt-1"></i>
+          <div class="flex-1">
+            <h4 class="font-medium text-sm">${notification.title}</h4>
+            <p class="text-xs text-gray-600">${notification.message}</p>
+            <p class="text-xs text-gray-500 mt-1">${new Date(notification.timestamp).toLocaleString("uz-UZ")}</p>
+          </div>
+          ${!notification.read ? '<div class="w-2 h-2 bg-blue-600 rounded-full"></div>' : ""}
+        </div>
+      `
+        notificationList.appendChild(notificationItem)
+      })
+  } catch (error) {
+    console.error("Bildirishnomalarni yuklashda xatolik:", error)
+  }
+}
+
+async function loadReferralInfo() {
+  try {
+    // Set referral code in about section
+    document.getElementById("userReferralCode").textContent = currentUser.referralCode || "NONE"
+    document.getElementById("myReferralCode").textContent = currentUser.referralCode || "NONE"
+
+    // Load referral history
+    const referrals = await firebaseManager.getArrayData("referrals")
+    const myReferrals = referrals.filter((r) => r.referrerId === currentUser.id)
+
+    const referralHistory = document.getElementById("referralHistory")
+    referralHistory.innerHTML = ""
+
+    if (myReferrals.length === 0) {
+      referralHistory.innerHTML = '<p class="text-gray-500 text-center py-4">Hozircha referallar yo\'q</p>'
+      return
+    }
+
+    myReferrals.forEach((referral) => {
+      const historyItem = document.createElement("div")
+      historyItem.className = "flex justify-between items-center p-3 border rounded-lg"
+      historyItem.innerHTML = `
+        <div>
+          <div class="font-medium">${referral.newUserName}</div>
+          <div class="text-sm text-gray-600">${referral.newUserEmail}</div>
+          <div class="text-xs text-gray-500">${new Date(referral.requestedAt).toLocaleDateString("uz-UZ")}</div>
+        </div>
+        <div class="text-right">
+          <span class="px-2 py-1 rounded-full text-xs ${
+            referral.status === "approved"
+              ? "bg-green-100 text-green-800"
+              : referral.status === "rejected"
+                ? "bg-red-100 text-red-800"
+                : "bg-yellow-100 text-yellow-800"
+          }">
+            ${
+              referral.status === "approved"
+                ? "Tasdiqlangan"
+                : referral.status === "rejected"
+                  ? "Rad etilgan"
+                  : "Kutilmoqda"
+            }
+          </span>
+          ${referral.status === "approved" ? '<div class="text-sm font-bold text-green-600">+20,000 coin</div>' : ""}
+        </div>
+      `
+      referralHistory.appendChild(historyItem)
+    })
+  } catch (error) {
+    console.error("Referal ma'lumotlarini yuklashda xatolik:", error)
+  }
+}
+
+function copyReferralCode() {
+  const code = currentUser.referralCode
+  if (code) {
+    navigator.clipboard
+      .writeText(code)
+      .then(() => {
+        alert("Referal kodi nusxalandi: " + code)
+      })
+      .catch(() => {
+        // Fallback for older browsers
+        const textArea = document.createElement("textarea")
+        textArea.value = code
+        document.body.appendChild(textArea)
+        textArea.select()
+        document.execCommand("copy")
+        document.body.removeChild(textArea)
+        alert("Referal kodi nusxalandi: " + code)
+      })
+  }
+}
+
+function getNotificationIcon(type) {
+  switch (type) {
+    case "task":
+      return "fa-tasks"
+    case "test":
+      return "fa-clipboard-check"
+    case "project":
+      return "fa-project-diagram"
+    case "payment":
+      return "fa-money-bill"
+    default:
+      return "fa-bell"
+  }
+}
+
+function toggleNotifications() {
+  const dropdown = document.getElementById("notificationDropdown")
+  dropdown.classList.toggle("hidden")
+}
+
+async function markAllAsRead() {
+  try {
+    const notifications = await firebaseManager.getArrayData("notifications")
+    const updates = {}
+
+    notifications.forEach((n) => {
+      if (n.userId === currentUser.id && !n.read) {
+        updates[n.id] = { ...n, read: true }
+      }
+    })
+
+    // Update all notifications at once
+    for (const [id, notification] of Object.entries(updates)) {
+      await firebaseManager.updateInArray("notifications", id, { read: true })
+    }
+
+    await loadNotifications()
+  } catch (error) {
+    console.error("Bildirishnomalarni o'qilgan deb belgilashda xatolik:", error)
+  }
+}
+
+function openTaskModal(taskId) {
+  currentTaskId = taskId
+  uploadedImage = null
+  
+  firebaseManager.getArrayData("tasks").then((tasks) => {
+    const task = tasks.find((t) => t.id === taskId)
+
+    if (task) {
+      document.getElementById("modalTaskTitle").textContent = task.title
+      document.getElementById("modalTaskDescription").textContent = task.description
+      
+      // Reset all form fields
+      document.getElementById("htmlCode").value = ""
+      document.getElementById("cssCode").value = ""
+      document.getElementById("jsCode").value = ""
+      document.getElementById("taskWebsiteUrl").value = ""
+      document.getElementById("imageUpload").value = ""
+      
+      // Reset submission type display
+      document.querySelectorAll('.submission-type').forEach(el => {
+        el.classList.add('hidden')
+      })
+      document.getElementById('codeSubmission').classList.remove('hidden')
+      
+      // Reset image preview
+      document.getElementById('imageUploadArea').classList.remove('hidden')
+      document.getElementById('imagePreview').classList.add('hidden')
+      
+      // Reset button states
+      document.querySelectorAll('[onclick^="showSubmissionType"]').forEach(btn => {
+        btn.classList.remove('border-blue-500', 'bg-blue-50')
+        btn.classList.add('border-gray-200')
+      })
+      document.querySelector('[onclick="showSubmissionType(\'code\')"]').classList.add('border-blue-500', 'bg-blue-50')
+      
+      document.getElementById("taskModal").classList.remove("hidden")
+      document.getElementById("taskModal").classList.add("flex")
+    }
   })
 }
 
-function showNotification(message, type = "info") {
-  const notification = document.createElement("div")
-  notification.className = `fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg text-white ${
-    type === "success" ? "bg-green-500" : type === "error" ? "bg-red-500" : "bg-blue-500"
-  }`
-  notification.textContent = message
-
-  document.body.appendChild(notification)
-
-  setTimeout(() => {
-    notification.remove()
-  }, 3000)
+function closeTaskModal() {
+  document.getElementById("taskModal").classList.add("hidden")
+  document.getElementById("taskModal").classList.remove("flex")
+  currentTaskId = null
+  uploadedImage = null
 }
 
-function showModal(title, content) {
-  const modal = document.createElement("div")
-  modal.className = "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-  modal.innerHTML = `
-    <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-      <div class="flex justify-between items-center p-6 border-b">
-        <h2 class="text-xl font-semibold">${title}</h2>
-        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600">
-          <i class="fas fa-times text-xl"></i>
-        </button>
-      </div>
-      <div class="p-6">
-        ${content}
-      </div>
-    </div>
-  `
+async function submitTask() {
+  if (!currentTaskId) {
+    alert("Vazifa ID topilmadi!")
+    return
+  }
 
-  document.getElementById("modalsContainer").appendChild(modal)
+  const htmlCode = document.getElementById("htmlCode").value.trim()
+  const cssCode = document.getElementById("cssCode").value.trim()
+  const jsCode = document.getElementById("jsCode").value.trim()
+  const websiteUrl = document.getElementById("taskWebsiteUrl").value.trim()
+
+  // Check if at least one field is filled
+  if (!htmlCode && !cssCode && !jsCode && !websiteUrl && !uploadedImage) {
+    alert("Kamida bitta maydonni to'ldiring: kod, URL yoki rasm!")
+    return
+  }
+
+  // Validate URL if provided
+  if (websiteUrl) {
+    try {
+      new URL(websiteUrl)
+    } catch {
+      alert("To'g'ri URL formatini kiriting! (masalan: https://example.com)")
+      return
+    }
+  }
+
+  try {
+    // Show loading state
+    const submitButton = document.querySelector('#taskModal button[onclick="submitTask()"]')
+    const originalText = submitButton.textContent
+    submitButton.textContent = "Yuklanmoqda..."
+    submitButton.disabled = true
+
+    const submission = {
+      taskId: currentTaskId,
+      studentId: currentUser.id,
+      studentName: currentUser.name,
+      htmlCode: htmlCode || "",
+      cssCode: cssCode || "",
+      jsCode: jsCode || "",
+      websiteUrl: websiteUrl || "",
+      submissionImage: uploadedImage || "",
+      submittedAt: new Date().toISOString(),
+      status: "pending",
+    }
+
+    console.log("Submitting task data:", submission)
+    
+    const submissionId = await firebaseManager.addToArray("submissions", submission)
+    console.log("Task submitted with ID:", submissionId)
+    
+    alert("Vazifa muvaffaqiyatli topshirildi!")
+    closeTaskModal()
+    await loadTasks()
+    
+    // Reset button state
+    submitButton.textContent = originalText
+    submitButton.disabled = false
+
+  } catch (error) {
+    console.error("Vazifa topshirishda xatolik:", error)
+    alert("Vazifa topshirishda xatolik yuz berdi: " + error.message)
+    
+    // Reset button state
+    const submitButton = document.querySelector('#taskModal button[onclick="submitTask()"]')
+    submitButton.textContent = "Topshirish"
+    submitButton.disabled = false
+  }
 }
 
-function closeModal() {
-  const modalsContainer = document.getElementById("modalsContainer")
-  modalsContainer.innerHTML = ""
+function openTestModal(testId) {
+  currentTestId = testId
+  firebaseManager.getArrayData("tests").then((tests) => {
+    const test = tests.find((t) => t.id === testId)
+
+    if (test) {
+      document.getElementById("modalTestTitle").textContent = test.title
+      const questionsContainer = document.getElementById("testQuestions")
+      questionsContainer.innerHTML = ""
+
+      test.questions.forEach((question, index) => {
+        const questionElement = document.createElement("div")
+        questionElement.className = "border rounded-lg p-4"
+        questionElement.innerHTML = `
+          <h4 class="font-medium mb-3">${index + 1}. ${question.question}</h4>
+          <div class="space-y-2">
+            ${question.options
+              .map(
+                (option, optIndex) => `
+              <label class="flex items-center space-x-2 cursor-pointer">
+                <input type="radio" name="question_${index}" value="${optIndex}" class="text-blue-600">
+                <span>${option}</span>
+              </label>
+            `,
+              )
+              .join("")}
+          </div>
+        `
+        questionsContainer.appendChild(questionElement)
+      })
+
+      document.getElementById("testModal").classList.remove("hidden")
+      document.getElementById("testModal").classList.add("flex")
+    }
+  })
 }
+
+function closeTestModal() {
+  document.getElementById("testModal").classList.add("hidden")
+  document.getElementById("testModal").classList.remove("flex")
+  currentTestId = null
+}
+
+async function submitTest() {
+  if (!currentTestId) return
+
+  try {
+    const tests = await firebaseManager.getArrayData("tests")
+    const test = tests.find((t) => t.id === currentTestId)
+
+    if (!test) return
+
+    let score = 0
+    const answers = []
+
+    test.questions.forEach((question, index) => {
+      const selectedOption = document.querySelector(`input[name="question_${index}"]:checked`)
+      if (selectedOption) {
+        const answerIndex = Number.parseInt(selectedOption.value)
+        answers.push(answerIndex)
+        if (answerIndex === question.correctAnswer) {
+          score++
+        }
+      } else {
+        answers.push(-1)
+      }
+    })
+
+    const result = {
+      testId: currentTestId,
+      studentId: currentUser.id,
+      studentName: currentUser.name,
+      score,
+      totalQuestions: test.questions.length,
+      answers,
+      completedAt: new Date().toISOString(),
+    }
+
+    await firebaseManager.addToArray("testResults", result)
+
+    // Update student rating based on test performance
+    const percentage = (score / test.questions.length) * 100
+    let points = 0
+    if (percentage >= 90) points = 10
+    else if (percentage >= 80) points = 8
+    else if (percentage >= 70) points = 6
+    else if (percentage >= 60) points = 4
+    else if (percentage >= 50) points = 2
+
+    if (points > 0) {
+      const users = await firebaseManager.getArrayData("users")
+      const user = users.find((u) => u.id === currentUser.id)
+      if (user) {
+        await firebaseManager.updateInArray("users", user.id, {
+          rating: (user.rating || 0) + points,
+        })
+      }
+    }
+
+    alert(`Test yakunlandi! Natija: ${score}/${test.questions.length} (${points} coin)`)
+    closeTestModal()
+    await loadTests()
+    await loadLeaderboard()
+    await updateStudentInfo()
+  } catch (error) {
+    console.error("Test topshirishda xatolik:", error)
+    alert("Test topshirishda xatolik yuz berdi!")
+  }
+}
+
+function openProjectModal(projectId) {
+  currentProjectId = projectId
+  firebaseManager.getArrayData("projects").then((projects) => {
+    const project = projects.find((p) => p.id === projectId)
+
+    if (project) {
+      document.getElementById("projectModalTitle").textContent = `Loyiha: ${project.title}`
+      document.getElementById("projectUrl").value = ""
+      document.getElementById("projectModal").classList.remove("hidden")
+      document.getElementById("projectModal").classList.add("flex")
+    }
+  })
+}
+
+function closeProjectModal() {
+  document.getElementById("projectModal").classList.add("hidden")
+  document.getElementById("projectModal").classList.remove("flex")
+  currentProjectId = null
+}
+
+async function submitProjectUrl() {
+  if (!currentProjectId) return
+
+  const websiteUrl = document.getElementById("projectUrl").value.trim()
+  if (!websiteUrl) {
+    alert("Website URL ni kiriting!")
+    return
+  }
+
+  // Validate URL format
+  try {
+    new URL(websiteUrl)
+  } catch {
+    alert("To'g'ri URL formatini kiriting! (masalan: https://example.com)")
+    return
+  }
+
+  try {
+    const submission = {
+      projectId: currentProjectId,
+      studentId: currentUser.id,
+      studentName: currentUser.name,
+      websiteUrl,
+      submittedAt: new Date().toISOString(),
+      status: "pending",
+    }
+
+    await firebaseManager.addToArray("projectSubmissions", submission)
+
+    alert("Loyiha URL muvaffaqiyatli topshirildi!")
+    closeProjectModal()
+    await loadProjects()
+  } catch (error) {
+    console.error("Loyiha topshirishda xatolik:", error)
+    alert("Loyiha topshirishda xatolik yuz berdi!")
+  }
+}
+
+async function sendMessage() {
+  const input = document.getElementById("chatInput")
+  const message = input.value.trim()
+  const imageInput = document.getElementById("imageInput")
+  const imageFile = imageInput.files[0]
+
+  if (!message && !imageFile) return
+
+  try {
+    if (imageFile) {
+      const reader = new FileReader()
+      reader.onload = async (e) => {
+        const newMessage = {
+          senderId: currentUser.id,
+          senderName: currentUser.name,
+          text: message,
+          image: e.target.result,
+          timestamp: new Date().toISOString(),
+        }
+        await firebaseManager.addToArray("chatMessages", newMessage)
+        input.value = ""
+        imageInput.value = ""
+        await loadChat()
+      }
+      reader.readAsDataURL(imageFile)
+    } else {
+      const newMessage = {
+        senderId: currentUser.id,
+        senderName: currentUser.name,
+        text: message,
+        timestamp: new Date().toISOString(),
+      }
+      await firebaseManager.addToArray("chatMessages", newMessage)
+      input.value = ""
+      await loadChat()
+    }
+  } catch (error) {
+    console.error("Xabar yuborishda xatolik:", error)
+    alert("Xabar yuborishda xatolik yuz berdi!")
+  }
+}
+
+// Enter key to send message
+document.getElementById("chatInput").addEventListener("keypress", (e) => {
+  if (e.key === "Enter") {
+    sendMessage()
+  }
+})
+
+async function loadWallet() {
+  try {
+    const balance = Math.floor((currentUser.rating || 0) * 10)
+    document.getElementById("walletBalance").textContent = `${balance.toLocaleString()} so'm`
+    document.getElementById("walletCoins").textContent = `${currentUser.rating || 0} coin`
+
+    // Load payment history
+    const transactions = await firebaseManager.getArrayData("paymentTransactions")
+    const myTransactions = transactions.filter((t) => t.studentId === currentUser.id)
+
+    const paymentHistory = document.getElementById("paymentHistory")
+    paymentHistory.innerHTML = ""
+
+    if (myTransactions.length === 0) {
+      paymentHistory.innerHTML = "<p class=\"text-gray-500 text-center py-4\">Hozircha to'lovlar yo'q</p>"
+      return
+    }
+
+    myTransactions
+      .slice(-10)
+      .reverse()
+      .forEach((transaction) => {
+        const historyItem = document.createElement("div")
+        historyItem.className = "flex justify-between items-center p-2 border rounded"
+        historyItem.innerHTML = `
+        <div>
+          <span class="font-medium">${transaction.description}</span>
+          <p class="text-xs text-gray-500">${new Date(transaction.timestamp).toLocaleDateString("uz-UZ")}</p>
+        </div>
+        <div class="text-right">
+          <span class="font-medium ${
+            transaction.type === "earning"
+              ? "text-green-600"
+              : transaction.type === "fine"
+                ? "text-red-600"
+                : "text-blue-600"
+          }">
+            ${transaction.type === "earning" ? "+" : "-"}${transaction.amount} coin
+          </span>
+        </div>
+      `
+        paymentHistory.appendChild(historyItem)
+      })
+  } catch (error) {
+    console.error("Hamyonni yuklashda xatolik:", error)
+  }
+}
+
+function showWithdrawalModal() {
+  document.getElementById("withdrawalModal").classList.remove("hidden")
+  document.getElementById("withdrawalModal").classList.add("flex")
+}
+
+function closeWithdrawalModal() {
+  document.getElementById("withdrawalModal").classList.add("hidden")
+  document.getElementById("withdrawalModal").classList.remove("flex")
+  document.getElementById("withdrawalCoins").value = ""
+  document.getElementById("withdrawalCardNumber").value = ""
+  document.getElementById("withdrawalPassword").value = ""
+  document.getElementById("withdrawalAmount").textContent = ""
+}
+
+async function submitWithdrawal() {
+  const coins = Number.parseInt(document.getElementById("withdrawalCoins").value)
+  const method = document.getElementById("withdrawalMethod").value
+  const cardNumber = document.getElementById("withdrawalCardNumber").value.trim()
+  const password = document.getElementById("withdrawalPassword").value
+
+  if (!coins || coins < 1000) {
+    alert("Minimal yechish miqdori 1000 coin!")
+    return
+  }
+
+  if (coins > currentUser.rating) {
+    alert("Yetarli coin yo'q!")
+    return
+  }
+
+  if (!cardNumber || cardNumber.length < 16) {
+    alert("To'g'ri karta raqamini kiriting!")
+    return
+  }
+
+  if (!password) {
+    alert("Parolni kiriting!")
+    return
+  }
+
+  try {
+    // Verify password
+    const users = await firebaseManager.getArrayData("users")
+    const user = users.find((u) => u.id === currentUser.id)
+    if (!user || user.password !== password) {
+      alert("Parol noto'g'ri!")
+      return
+    }
+
+    const amount = coins * 10 // 1 coin = 10 so'm
+
+    // Deduct coins from user balance
+    await firebaseManager.updateInArray("users", currentUser.id, {
+      rating: (user.rating || 0) - coins,
+    })
+
+    // Create withdrawal request
+    const request = {
+      studentId: currentUser.id,
+      studentName: currentUser.name,
+      coins,
+      amount,
+      method,
+      cardNumber,
+      status: "pending",
+      requestedAt: new Date().toISOString(),
+    }
+
+    const requestId = await firebaseManager.addToArray("withdrawalRequests", request)
+
+    // Record transaction
+    await firebaseManager.addToArray("paymentTransactions", {
+      studentId: currentUser.id,
+      type: "withdrawal",
+      amount: coins,
+      description: `Pul yechish so'rovi: ${method} ${cardNumber}`,
+      timestamp: new Date().toISOString(),
+      relatedId: requestId,
+    })
+
+    alert(`Pul yechish so'rovi yuborildi! ${coins} coin (${amount.toLocaleString()} so'm)`)
+    closeWithdrawalModal()
+    await updateStudentInfo()
+    await loadWallet()
+  } catch (error) {
+    console.error("Pul yechish so'rovini yuborishda xatolik:", error)
+    alert("Pul yechish so'rovini yuborishda xatolik yuz berdi!")
+  }
+}
+
+// Close dropdowns when clicking outside
+document.addEventListener("click", (e) => {
+  const notificationDropdown = document.getElementById("notificationDropdown")
+  const notificationButton = e.target.closest("button")
+
+  if (!notificationButton || !notificationButton.onclick?.toString().includes("toggleNotifications")) {
+    notificationDropdown.classList.add("hidden")
+  }
+})
 
 function logout() {
   sessionStorage.removeItem("currentUser")
   window.location.href = "index.html"
 }
 
-// Make functions global
-window.showSection = showSection
-window.loadStudents = loadStudents
-window.showStudentActions = showStudentActions
-window.showAdjustCoinsModal = showAdjustCoinsModal
-window.adjustCoins = adjustCoins
-window.showCreateTaskModal = showCreateTaskModal
-window.toggleTaskAssignOptions = toggleTaskAssignOptions
-window.createTask = createTask
-window.showTaskSubmissions = showTaskSubmissions
-window.showGradeSubmissionModal = showGradeSubmissionModal
-window.gradeSubmission = gradeSubmission
-window.showCreateProjectModal = showCreateProjectModal
-window.toggleProjectAssignOptions = toggleProjectAssignOptions
-window.createProject = createProject
-window.showProjectSubmissions = showProjectSubmissions
-window.showGradeProjectModal = showGradeProjectModal
-window.gradeProject = gradeProject
-window.showCreateGroupModal = showCreateGroupModal
-window.createGroup = createGroup
-window.confirmPayment = confirmPayment
-window.approveWithdrawal = approveWithdrawal
-window.approveReferral = approveReferral
-window.rejectReferral = rejectReferral
-window.showCreateTestModal = showCreateTestModal
-window.toggleTestAssignOptions = toggleTestAssignOptions
-window.addQuestion = addQuestion
-window.removeQuestion = removeQuestion
-window.createTest = createTest
-window.closeModal = closeModal
+// Make functions global for onclick handlers
+window.showTab = showTab
+window.showSubmissionType = showSubmissionType
+window.handleImageUpload = handleImageUpload
+window.toggleNotifications = toggleNotifications
+window.markAllAsRead = markAllAsRead
+window.openTaskModal = openTaskModal
+window.closeTaskModal = closeTaskModal
+window.submitTask = submitTask
+window.openTestModal = openTestModal
+window.closeTestModal = closeTestModal
+window.submitTest = submitTest
+window.openProjectModal = openProjectModal
+window.closeProjectModal = closeProjectModal
+window.submitProjectUrl = submitProjectUrl
+window.sendMessage = sendMessage
+window.showWithdrawalModal = showWithdrawalModal
+window.closeWithdrawalModal = closeWithdrawalModal
+window.submitWithdrawal = submitWithdrawal
 window.logout = logout
+window.copyReferralCode = copyReferralCode
