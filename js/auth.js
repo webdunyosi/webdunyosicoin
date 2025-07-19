@@ -42,7 +42,7 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
       if (user.role === "admin") {
         window.location.href = "admin-dashboard.html"
       } else {
-        window.location.href = "student-dashboard.html"
+        window.location.href = "student-dashboard111.html"
       }
     } else {
       alert("Email yoki parol noto'g'ri!")

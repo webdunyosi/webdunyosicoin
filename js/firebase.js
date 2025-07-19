@@ -84,9 +84,9 @@ class FirebaseManager {
         "notifications",
         "userActivity",
         "referrals",
-        "monthlyPayments", // Yangi: oylik to'lovlar
-        "paymentRequests", // Yangi: to'lov so'rovlari
-        "groups", // Yangi: guruhlar
+        "monthlyPayments",
+        "paymentRequests",
+        "groups",
       ]
 
       for (const collection of defaultCollections) {
@@ -318,8 +318,10 @@ class FirebaseManager {
         balance: 0,
         referralCode: referralCode,
         joinDate: new Date().toISOString(),
-        paymentStatus: "unpaid", // Yangi: to'lov holati
-        lastPaymentDate: null, // Yangi: oxirgi to'lov sanasi
+        paymentStatus: "unpaid",
+        lastPaymentDate: null,
+        canWithdraw: false,
+        groupId: null,
       }
 
       await this.addToArray("users", newUser)
@@ -354,50 +356,135 @@ class FirebaseManager {
   }
 
   // Oylik to'lov yaratish
-  async createMonthlyPayment(studentId, amount, description, dueDate) {
+  async createMonthlyPayment(studentIds, amount, description, dueDate) {
     try {
-      const payment = {
-        studentId,
-        amount,
-        description,
-        dueDate: dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 kun
-        status: "pending",
-        createdAt: new Date().toISOString(),
-        createdBy: "admin"
+      const paymentIds = []
+      
+      // Har bir o'quvchi uchun alohida to'lov yaratish
+      for (const studentId of studentIds) {
+        const payment = {
+          studentId,
+          amount,
+          description,
+          dueDate: dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+          status: "pending",
+          createdAt: new Date().toISOString(),
+          createdBy: "admin",
+          canPayWithCoins: true
+        }
+
+        const paymentId = await this.addToArray("monthlyPayments", payment)
+        paymentIds.push(paymentId)
+
+        // O'quvchining to'lov holatini yangilash
+        await this.updateInArray("users", studentId, {
+          paymentStatus: "unpaid",
+          currentPaymentId: paymentId,
+          paymentAmount: amount,
+          paymentDescription: description,
+          paymentDueDate: payment.dueDate,
+          canWithdraw: false,
+        })
       }
 
-      const paymentId = await this.addToArray("monthlyPayments", payment)
-
-      // O'quvchining to'lov holatini yangilash
-      await this.updateInArray("users", studentId, {
-        paymentStatus: "unpaid",
-        currentPaymentId: paymentId,
-        paymentAmount: amount,
-        paymentDescription: description,
-        paymentDueDate: payment.dueDate
-      })
-
       // Bildirishnoma yuborish
-      await this.sendNotification([studentId], {
+      await this.sendNotification(studentIds, {
         type: "payment",
         title: "Yangi to'lov",
-        message: `${description}: ${amount.toLocaleString()} so'm`
+        message: `${description}: ${amount.toLocaleString()} so'm yoki ${Math.ceil(amount / 10).toLocaleString()} coin`,
       })
 
-      return paymentId
+      return paymentIds
     } catch (error) {
       console.error("Oylik to'lov yaratishda xatolik:", error)
       throw error
     }
   }
 
-  // To'lovni tasdiqlash
+  // Coin bilan to'lash
+  async payWithCoins(studentId, paymentId, customAmount = null) {
+    try {
+      const users = await this.getArrayData("users")
+      const payments = await this.getArrayData("monthlyPayments")
+      
+      const user = users.find(u => u.id === studentId)
+      const payment = payments.find(p => p.id === paymentId)
+
+      if (!user || !payment) {
+        throw new Error("Foydalanuvchi yoki to'lov topilmadi")
+      }
+
+      if (payment.status === "paid") {
+        throw new Error("Bu to'lov allaqachon to'langan")
+      }
+
+      // Use custom amount or full payment amount
+      const paymentAmount = customAmount || (payment.amount - (payment.paidAmount || 0))
+      const requiredCoins = Math.ceil(paymentAmount / 10) // 1 coin = 10 so'm
+      
+      if (user.rating < requiredCoins) {
+        throw new Error(`Yetarli coin yo'q. Kerak: ${requiredCoins.toLocaleString()} coin, Mavjud: ${user.rating.toLocaleString()} coin`)
+      }
+
+      // Calculate remaining payment amount
+      const totalPaid = (payment.paidAmount || 0) + paymentAmount
+      const remainingAmount = payment.amount - totalPaid
+      const isFullPayment = remainingAmount <= 0
+
+      // Coinlarni yechish
+      await this.updateInArray("users", studentId, {
+        rating: user.rating - requiredCoins,
+        paymentStatus: isFullPayment ? "paid" : "partial",
+        lastPaymentDate: isFullPayment ? new Date().toISOString() : user.lastPaymentDate,
+        currentPaymentId: isFullPayment ? null : paymentId,
+        paymentAmount: isFullPayment ? null : remainingAmount,
+        paymentDescription: isFullPayment ? null : payment.description,
+        paymentDueDate: isFullPayment ? null : payment.dueDate,
+        canWithdraw: isFullPayment,
+      })
+
+      // To'lov holatini yangilash
+      await this.updateInArray("monthlyPayments", paymentId, {
+        status: isFullPayment ? "paid" : "partial",
+        paidAt: new Date().toISOString(),
+        paymentMethod: "coins",
+        coinsUsed: requiredCoins,
+        paidAmount: totalPaid,
+        remainingAmount: remainingAmount
+      })
+
+      // Transaction yozish
+      await this.addToArray("paymentTransactions", {
+        studentId,
+        type: "payment",
+        amount: -requiredCoins,
+        description: `Coin bilan to'lov: ${payment.description} (${paymentAmount.toLocaleString()} so'm)`,
+        timestamp: new Date().toISOString(),
+        relatedId: paymentId,
+      })
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([studentId], {
+        type: "payment",
+        title: isFullPayment ? "To'lov to'liq amalga oshirildi" : "Qisman to'lov amalga oshirildi",
+        message: `${paymentAmount.toLocaleString()} so'm (${requiredCoins.toLocaleString()} coin) to'landi${!isFullPayment ? `. Qolgan: ${remainingAmount.toLocaleString()} so'm` : ''}`,
+      })
+
+      return true
+    } catch (error) {
+      console.error("Coin bilan to'lashda xatolik:", error)
+      throw error
+    }
+  }
+
+  // To'lovni tasdiqlash (admin tomonidan)
   async confirmPayment(paymentId, studentId) {
     try {
       // To'lov holatini yangilash
       await this.updateInArray("monthlyPayments", paymentId, {
         status: "paid",
-        paidAt: new Date().toISOString()
+        paidAt: new Date().toISOString(),
+        paymentMethod: "cash",
       })
 
       // O'quvchining to'lov holatini yangilash
@@ -407,27 +494,28 @@ class FirebaseManager {
         currentPaymentId: null,
         paymentAmount: null,
         paymentDescription: null,
-        paymentDueDate: null
+        paymentDueDate: null,
+        canWithdraw: true,
       })
 
       // Transaction yozish
-      const users = await this.getArrayData("users")
-      const user = users.find(u => u.id === studentId)
+      const payments = await this.getArrayData("monthlyPayments")
+      const payment = payments.find(p => p.id === paymentId)
       
       await this.addToArray("paymentTransactions", {
         studentId,
         type: "payment",
-        amount: user.paymentAmount || 0,
-        description: `To'lov tasdiqlandi: ${user.paymentDescription || "Oylik to'lov"}`,
+        amount: payment.amount,
+        description: `To'lov tasdiqlandi: ${payment.description}`,
         timestamp: new Date().toISOString(),
-        relatedId: paymentId
+        relatedId: paymentId,
       })
 
       // Bildirishnoma yuborish
       await this.sendNotification([studentId], {
         type: "payment",
         title: "To'lov tasdiqlandi",
-        message: "Sizning to'lovingiz admin tomonidan tasdiqlandi"
+        message: "Sizning to'lovingiz admin tomonidan tasdiqlandi",
       })
 
       return true
@@ -446,29 +534,873 @@ class FirebaseManager {
       if (user) {
         // Jarima qo'llash
         await this.updateInArray("users", studentId, {
-          rating: (user.rating || 0) - amount
+          rating: (user.rating || 0) - amount,
+          canWithdraw: false,
         })
 
         // Transaction yozish
         await this.addToArray("paymentTransactions", {
           studentId,
           type: "fine",
-          amount,
+          amount: -amount,
           description: "To'lov jarima - oylik to'lov kechiktirildi",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         })
 
         // Bildirishnoma yuborish
         await this.sendNotification([studentId], {
           type: "payment",
           title: "To'lov jarima",
-          message: `Oylik to'lovni kechiktirganingiz uchun ${amount} coin jarima qo'llandi`
+          message: `Oylik to'lovni kechiktirganingiz uchun ${amount.toLocaleString()} coin jarima qo'llandi`,
         })
 
         return true
       }
     } catch (error) {
       console.error("To'lov jarima qo'llashda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Pul yechish so'rovi
+  async requestWithdrawal(studentId, coins, cardNumber, method, password) {
+    try {
+      const users = await this.getArrayData("users")
+      const user = users.find(u => u.id === studentId)
+
+      if (!user) {
+        throw new Error("Foydalanuvchi topilmadi")
+      }
+
+      if (!user.canWithdraw) {
+        throw new Error("Oylik to'lovni to'lamaguningizcha pul yecha olmaysiz")
+      }
+
+      if (coins < 1000) {
+        throw new Error("Minimal yechish miqdori 1,000 coin")
+      }
+
+      if (user.rating < coins) {
+        throw new Error("Yetarli coin yo'q")
+      }
+
+      if (user.password !== password) {
+        throw new Error("Parol noto'g'ri")
+      }
+
+      const amount = Math.floor(coins * 10) // 100 coin = 1000 so'm
+
+      const withdrawal = {
+        studentId,
+        studentName: user.name,
+        coins,
+        amount,
+        cardNumber,
+        method,
+        status: "pending",
+        requestedAt: new Date().toISOString(),
+      }
+
+      await this.addToArray("withdrawalRequests", withdrawal)
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([studentId], {
+        type: "withdrawal",
+        title: "Pul yechish so'rovi",
+        message: `${coins.toLocaleString()} coin (${amount.toLocaleString()} so'm) yechish so'rovi yuborildi`,
+      })
+
+      return true
+    } catch (error) {
+      console.error("Pul yechish so'rovida xatolik:", error)
+      throw error
+    }
+  }
+
+  // Pul yechish so'rovini tasdiqlash
+  async approveWithdrawal(requestId) {
+    try {
+      const requests = await this.getArrayData("withdrawalRequests")
+      const request = requests.find(r => r.id === requestId)
+
+      if (!request) {
+        throw new Error("So'rov topilmadi")
+      }
+
+      // Foydalanuvchidan coinlarni yechish
+      const users = await this.getArrayData("users")
+      const user = users.find(u => u.id === request.studentId)
+
+      if (user && user.rating >= request.coins) {
+        await this.updateInArray("users", request.studentId, {
+          rating: user.rating - request.coins,
+        })
+
+        // Transaction yozish
+        await this.addToArray("paymentTransactions", {
+          studentId: request.studentId,
+          type: "withdrawal",
+          amount: -request.coins,
+          description: `Pul yechish: ${request.amount.toLocaleString()} so'm`,
+          timestamp: new Date().toISOString(),
+          relatedId: requestId,
+        })
+      }
+
+      // So'rov holatini yangilash
+      await this.updateInArray("withdrawalRequests", requestId, {
+        status: "approved",
+        approvedAt: new Date().toISOString(),
+      })
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([request.studentId], {
+        type: "withdrawal",
+        title: "Pul yechish tasdiqlandi",
+        message: `${request.amount.toLocaleString()} so'm kartangizga o'tkazildi`,
+      })
+
+      return true
+    } catch (error) {
+      console.error("Pul yechish so'rovini tasdiqlashda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Vazifa yaratish
+  async createTask(title, description, deadline, reward = 50, groupId = null, websiteUrl = null, assignedStudents = null) {
+    try {
+      const task = {
+        title,
+        description,
+        deadline,
+        reward,
+        groupId,
+        websiteUrl,
+        assignedStudents: assignedStudents,
+        status: "active",
+        createdAt: new Date().toISOString(),
+        createdBy: "admin",
+      }
+
+      const taskId = await this.addToArray("tasks", task)
+
+      // Bildirishnoma yuborish
+      const users = await this.getArrayData("users")
+      let students = users.filter(u => u.role === "student")
+      
+      if (assignedStudents && assignedStudents.length > 0) {
+        students = students.filter(u => assignedStudents.includes(u.id))
+      } else if (groupId) {
+        students = students.filter(u => u.groupId === groupId)
+      }
+      
+      const studentIdsList = students.map(s => s.id)
+
+      if (studentIdsList.length > 0) {
+        await this.sendNotification(studentIdsList, {
+          type: "task",
+          title: "Yangi vazifa",
+          message: `${title} - ${reward} coin`,
+        })
+      }
+
+      return taskId
+    } catch (error) {
+      console.error("Vazifa yaratishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Vazifa topshirish
+  async submitTask(taskId, studentId, description) {
+    try {
+      const submissionData = {
+        taskId,
+        studentId,
+        description,
+        status: "pending",
+        submittedAt: new Date().toISOString(),
+      }
+
+      const submissionId = await this.addToArray("submissions", submissionData)
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([studentId], {
+        type: "task",
+        title: "Vazifa topshirildi",
+        message: "Vazifangiz admin tomonidan ko'rib chiqiladi",
+      })
+
+      return submissionId
+    } catch (error) {
+      console.error("Vazifa topshirishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Vazifa topshiriqini baholash
+  async gradeSubmission(submissionId, customReward, feedback = "") {
+    try {
+      const submissions = await this.getArrayData("submissions")
+      const submission = submissions.find(s => s.id === submissionId)
+
+      if (!submission) {
+        throw new Error("Topshiriq topilmadi")
+      }
+
+      const tasks = await firebaseManager.getArrayData("tasks")
+      const task = tasks.find(t => t.id === submission.taskId)
+
+      const finalReward = customReward !== undefined ? customReward : task.reward
+      const isApproved = finalReward > 0
+      // Topshiriq holatini yangilash
+      await this.updateInArray("submissions", submissionId, {
+        status: isApproved ? "approved" : "rejected",
+        reward: finalReward,
+        feedback,
+        gradedAt: new Date().toISOString(),
+      })
+
+      // Agar muvaffaqiyatli bo'lsa, coin berish
+      if (isApproved && finalReward > 0) {
+        const users = await this.getArrayData("users")
+        const user = users.find(u => u.id === submission.studentId)
+
+        if (user) {
+          await this.updateInArray("users", submission.studentId, {
+            rating: (user.rating || 0) + finalReward,
+          })
+
+          // Transaction yozish
+          await this.addToArray("paymentTransactions", {
+            studentId: submission.studentId,
+            type: "earning",
+            amount: finalReward,
+            description: `Vazifa bajarildi: ${task.title}`,
+            timestamp: new Date().toISOString(),
+            relatedId: submissionId,
+          })
+        }
+      }
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([submission.studentId], {
+        type: "task",
+        title: isApproved ? "Vazifa qabul qilindi" : "Vazifa rad etildi",
+        message: isApproved ? 
+          `${finalReward} coin olindingiz!` : 
+          `Rad etildi. ${feedback}`,
+      })
+
+      return true
+    } catch (error) {
+      console.error("Vazifa baholashda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Vazifa jarima qo'llash (muddati o'tgan vazifalar uchun)
+  async applyTaskPenalty(studentId, amount = 200) {
+    try {
+      const users = await this.getArrayData("users")
+      const user = users.find(u => u.id === studentId)
+      
+      if (user) {
+        // Jarima qo'llash
+        await this.updateInArray("users", studentId, {
+          rating: (user.rating || 0) - amount,
+        })
+
+        // Transaction yozish
+        await this.addToArray("paymentTransactions", {
+          studentId,
+          type: "fine",
+          amount: -amount,
+          description: "Vazifa jarima - muddati o'tgan vazifa",
+          timestamp: new Date().toISOString(),
+        })
+
+        // Bildirishnoma yuborish
+        await this.sendNotification([studentId], {
+          type: "task",
+          title: "Vazifa jarima",
+          message: `Vazifani vaqtida bajarmaganingiz uchun ${amount} coin jarima qo'llandi`,
+        })
+
+        return true
+      }
+    } catch (error) {
+      console.error("Vazifa jarima qo'llashda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Test yaratish
+  async createTest(title, description, questions, timeLimit = 30, groupId = null, assignedStudents = null) {
+    try {
+      const test = {
+        title,
+        description,
+        questions,
+        timeLimit,
+        groupId,
+        assignedStudents,
+        status: "active",
+        createdAt: new Date().toISOString(),
+        createdBy: "admin",
+      }
+
+      const testId = await this.addToArray("tests", test)
+
+      // Bildirishnoma yuborish
+      const users = await this.getArrayData("users")
+      let students = users.filter(u => u.role === "student")
+      
+      if (assignedStudents && assignedStudents.length > 0) {
+        students = students.filter(u => assignedStudents.includes(u.id))
+      } else if (groupId) {
+        students = students.filter(u => u.groupId === groupId)
+      }
+      
+      const studentIds = students.map(s => s.id)
+
+      if (studentIds.length > 0) {
+        await this.sendNotification(studentIds, {
+          type: "test",
+          title: "Yangi test",
+          message: `${title} - ${questions.length} savol`,
+        })
+      }
+
+      return testId
+    } catch (error) {
+      console.error("Test yaratishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Test topshirish
+  async submitTest(testId, studentId, answers) {
+    try {
+      const tests = await this.getArrayData("tests")
+      const test = tests.find(t => t.id === testId)
+
+      if (!test) {
+        throw new Error("Test topilmadi")
+      }
+
+      // Javoblarni tekshirish
+      let correctAnswers = 0
+      const results = []
+
+      test.questions.forEach((question, index) => {
+        const userAnswer = answers[index]
+        const isCorrect = userAnswer === question.correctAnswer
+        
+        if (isCorrect) {
+          correctAnswers++
+        }
+
+        results.push({
+          questionIndex: index,
+          userAnswer,
+          correctAnswer: question.correctAnswer,
+          isCorrect,
+        })
+      })
+
+      const score = Math.round((correctAnswers / test.questions.length) * 100)
+      const reward = score >= 70 ? Math.floor(score / 10) * 10 : 0
+
+      const testResult = {
+        testId,
+        studentId,
+        answers,
+        results,
+        score,
+        reward,
+        submittedAt: new Date().toISOString(),
+      }
+
+      const resultId = await this.addToArray("testResults", testResult)
+
+      // Agar muvaffaqiyatli bo'lsa, coin berish
+      if (reward > 0) {
+        const users = await this.getArrayData("users")
+        const user = users.find(u => u.id === studentId)
+
+        if (user) {
+          await this.updateInArray("users", studentId, {
+            rating: (user.rating || 0) + reward,
+          })
+
+          // Transaction yozish
+          await this.addToArray("paymentTransactions", {
+            studentId,
+            type: "earning",
+            amount: reward,
+            description: `Test bajarildi: ${test.title} (${score}%)`,
+            timestamp: new Date().toISOString(),
+            relatedId: resultId,
+          })
+        }
+      }
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([studentId], {
+        type: "test",
+        title: "Test yakunlandi",
+        message: `Natija: ${score}%${reward > 0 ? `, ${reward} coin olindingiz!` : ""}`,
+      })
+
+      return { resultId, score, reward }
+    } catch (error) {
+      console.error("Test topshirishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Loyiha yaratish
+  async createProject(title, description, deadline, payment, groupId = null, assignedStudents = null, websiteUrl = null) {
+    try {
+      const project = {
+        title,
+        description,
+        deadline,
+        payment,
+        groupId,
+        assignedStudents,
+        websiteUrl,
+        status: "active",
+        createdAt: new Date().toISOString(),
+        createdBy: "admin",
+      }
+
+      const projectId = await this.addToArray("projects", project)
+
+      // Bildirishnoma yuborish
+      const users = await this.getArrayData("users")
+      let students = users.filter(u => u.role === "student")
+      
+      if (assignedStudents && assignedStudents.length > 0) {
+        students = students.filter(u => assignedStudents.includes(u.id))
+      } else if (groupId) {
+        students = students.filter(u => u.groupId === groupId)
+      }
+      
+      const studentIds = students.map(s => s.id)
+
+      if (studentIds.length > 0) {
+        await this.sendNotification(studentIds, {
+          type: "project",
+          title: "Yangi loyiha",
+          message: `${title} - ${payment} coin`,
+        })
+      }
+
+      return projectId
+    } catch (error) {
+      console.error("Loyiha yaratishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Loyiha topshirish
+  async submitProject(projectId, studentId, description) {
+    try {
+      const submission = {
+        projectId,
+        studentId,
+        description,
+        status: "pending",
+        submittedAt: new Date().toISOString(),
+      }
+
+      const submissionId = await this.addToArray("projectSubmissions", submission)
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([studentId], {
+        type: "project",
+        title: "Loyiha topshirildi",
+        message: "Loyihangiz admin tomonidan ko'rib chiqiladi",
+      })
+
+      return submissionId
+    } catch (error) {
+      console.error("Loyiha topshirishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Loyiha topshiriqini baholash
+  async gradeProjectSubmission(submissionId, customReward, feedback = "") {
+    try {
+      const submissions = await this.getArrayData("projectSubmissions")
+      const submission = submissions.find(s => s.id === submissionId)
+
+      if (!submission) {
+        throw new Error("Loyiha topshirig'i topilmadi")
+      }
+
+      const projects = await this.getArrayData("projects")
+      const project = projects.find(p => p.id === submission.projectId)
+
+      const finalReward = customReward !== undefined ? customReward : project.payment
+      const isApproved = finalReward > 0
+
+      // Topshiriq holatini yangilash
+      await this.updateInArray("projectSubmissions", submissionId, {
+        status: isApproved ? "approved" : "rejected",
+        reward: finalReward,
+        feedback,
+        gradedAt: new Date().toISOString(),
+      })
+
+      // Agar muvaffaqiyatli bo'lsa, coin berish
+      if (isApproved && finalReward > 0) {
+        const users = await this.getArrayData("users")
+        const user = users.find(u => u.id === submission.studentId)
+
+        if (user) {
+          await this.updateInArray("users", submission.studentId, {
+            rating: (user.rating || 0) + finalReward,
+          })
+
+          // Transaction yozish
+          await this.addToArray("paymentTransactions", {
+            studentId: submission.studentId,
+            type: "earning",
+            amount: finalReward,
+            description: `Loyiha bajarildi: ${project.title}`,
+            timestamp: new Date().toISOString(),
+            relatedId: submissionId,
+          })
+        }
+      }
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([submission.studentId], {
+        type: "project",
+        title: isApproved ? "Loyiha qabul qilindi" : "Loyiha rad etildi",
+        message: isApproved ? 
+          `${finalReward} coin olindingiz!` : 
+          `Rad etildi. ${feedback}`,
+      })
+
+      return true
+    } catch (error) {
+      console.error("Loyiha baholashda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Coin qo'shish/ayirish
+  async adjustCoins(studentId, amount, reason, type = "adjustment") {
+    try {
+      const users = await this.getArrayData("users")
+      const user = users.find(u => u.id === studentId)
+      
+      if (!user) {
+        throw new Error("Foydalanuvchi topilmadi")
+      }
+
+      const newRating = (user.rating || 0) + amount
+      
+      await this.updateInArray("users", studentId, {
+        rating: newRating,
+      })
+
+      // Transaction yozish
+      await this.addToArray("paymentTransactions", {
+        studentId,
+        type: type,
+        amount: amount,
+        description: reason,
+        timestamp: new Date().toISOString(),
+      })
+
+      // Bildirishnoma yuborish
+      await this.sendNotification([studentId], {
+        type: "payment",
+        title: amount > 0 ? "Coin qo'shildi" : "Coin ayirildi",
+        message: `${Math.abs(amount).toLocaleString()} coin ${amount > 0 ? "qo'shildi" : "ayirildi"}. Sabab: ${reason}`,
+      })
+
+      return true
+    } catch (error) {
+      console.error("Coin o'zgartirishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // O'quvchi ismini yangilash
+  async updateStudentName(studentId, newName) {
+    try {
+      await this.updateInArray("users", studentId, {
+        name: newName,
+        updatedAt: new Date().toISOString()
+      })
+      
+      // Faoliyat yozish
+      await this.logUserActivity(studentId, "name_update", `Ism o'zgartirildi: ${newName}`)
+      
+      return true
+    } catch (error) {
+      console.error("Ism yangilashda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Davomat belgilash
+  async markAttendance(groupId, date, attendanceData, selectedStudents = null, applyPenalties = true) {
+    try {
+      // Agar ma'lum o'quvchilar tanlangan bo'lsa, faqat ularni ishlatish
+      let finalAttendanceData = attendanceData
+      if (selectedStudents && selectedStudents.length > 0) {
+        finalAttendanceData = {}
+        selectedStudents.forEach(studentId => {
+          finalAttendanceData[studentId] = attendanceData[studentId] || false
+        })
+      }
+      
+      const attendanceRecord = {
+        groupId,
+        date,
+        attendanceData: finalAttendanceData, // {studentId: true/false}
+        markedAt: new Date().toISOString(),
+        markedBy: "admin"
+      }
+
+      await this.addToArray("attendanceRecords", attendanceRecord)
+      return true
+    } catch (error) {
+      console.error("Davomat belgilashda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Guruh yaratish
+  async createGroup(name, description, selectedStudents = []) {
+    try {
+      const group = {
+        name,
+        description,
+        createdAt: new Date().toISOString(),
+        createdBy: "admin",
+        studentCount: selectedStudents.length,
+        studentIds: selectedStudents
+      }
+
+      const groupId = await this.addToArray("groups", group)
+      
+      // O'quvchilarni guruhga biriktirish
+      for (const studentId of selectedStudents) {
+        await this.updateInArray("users", studentId, {
+          groupId: groupId
+        })
+      }
+      
+      return groupId
+    } catch (error) {
+      console.error("Guruh yaratishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Statistika olish
+  async getStatistics() {
+    try {
+      const users = await this.getArrayData('users')
+      const tasks = await this.getArrayData('tasks')
+      const tests = await this.getArrayData('tests')
+      const projects = await this.getArrayData('projects')
+      const submissions = await this.getArrayData('submissions')
+      const testResults = await this.getArrayData('testResults')
+      const projectSubmissions = await this.getArrayData('projectSubmissions')
+      const monthlyPayments = await this.getArrayData('monthlyPayments')
+      const withdrawalRequests = await this.getArrayData('withdrawalRequests')
+      
+      const students = users.filter(u => u.role === 'student')
+      
+      // Asosiy statistika
+      const totalStudents = students.length
+      const totalTasks = tasks.length
+      const totalTests = tests.length
+      const totalProjects = projects.length
+      
+      // To'lov statistikasi
+      const paidStudents = students.filter(s => s.paymentStatus === 'paid').length
+      const unpaidStudents = students.filter(s => s.paymentStatus === 'unpaid').length
+      const partialPaidStudents = students.filter(s => s.paymentStatus === 'partial').length
+      
+      const totalPayments = monthlyPayments.length
+      const completedPayments = monthlyPayments.filter(p => p.status === 'paid').length
+      const pendingPayments = monthlyPayments.filter(p => p.status === 'pending').length
+      
+      // Pul yechish statistikasi
+      const totalWithdrawals = withdrawalRequests.length
+      const approvedWithdrawals = withdrawalRequests.filter(w => w.status === 'approved').length
+      const pendingWithdrawals = withdrawalRequests.filter(w => w.status === 'pending').length
+      
+      // Vazifa statistikasi
+      const totalSubmissions = submissions.length
+      const approvedSubmissions = submissions.filter(s => s.status === 'approved').length
+      const pendingSubmissions = submissions.filter(s => s.status === 'pending').length
+      
+      // Test statistikasi
+      const totalTestResults = testResults.length
+      const passedTests = testResults.filter(t => t.score >= 70).length
+      
+      // Loyiha statistikasi
+      const totalProjectSubmissions = projectSubmissions.length
+      const approvedProjects = projectSubmissions.filter(p => p.status === 'approved').length
+      
+      return {
+        general: {
+          totalStudents,
+          totalTasks,
+          totalTests,
+          totalProjects
+        },
+        payments: {
+          paidStudents,
+          unpaidStudents,
+          partialPaidStudents,
+          totalPayments,
+          completedPayments,
+          pendingPayments,
+          paymentRate: totalStudents > 0 ? Math.round((paidStudents / totalStudents) * 100) : 0
+        },
+        withdrawals: {
+          totalWithdrawals,
+          approvedWithdrawals,
+          pendingWithdrawals,
+          approvalRate: totalWithdrawals > 0 ? Math.round((approvedWithdrawals / totalWithdrawals) * 100) : 0
+        },
+        tasks: {
+          totalSubmissions,
+          approvedSubmissions,
+          pendingSubmissions,
+          approvalRate: totalSubmissions > 0 ? Math.round((approvedSubmissions / totalSubmissions) * 100) : 0
+        },
+        tests: {
+          totalTestResults,
+          passedTests,
+          passRate: totalTestResults > 0 ? Math.round((passedTests / totalTestResults) * 100) : 0
+        },
+        projects: {
+          totalProjectSubmissions,
+          approvedProjects,
+          approvalRate: totalProjectSubmissions > 0 ? Math.round((approvedProjects / totalProjectSubmissions) * 100) : 0
+        }
+      }
+    } catch (error) {
+      console.error("Statistika olishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // To'lov statistikasi
+  async getPaymentStatistics() {
+    try {
+      const monthlyPayments = await this.getArrayData('monthlyPayments')
+      const users = await this.getArrayData('users')
+      const paymentTransactions = await this.getArrayData('paymentTransactions')
+      
+      const students = users.filter(u => u.role === 'student')
+      
+      // Oylik to'lovlar statistikasi
+      const currentMonth = new Date().getMonth()
+      const currentYear = new Date().getFullYear()
+      
+      const currentMonthPayments = monthlyPayments.filter(p => {
+        const paymentDate = new Date(p.createdAt)
+        return paymentDate.getMonth() === currentMonth && paymentDate.getFullYear() === currentYear
+      })
+      
+      // Jami to'lovlar
+      const totalPaymentAmount = monthlyPayments.reduce((sum, p) => sum + (p.amount || 0), 0)
+      const paidPaymentAmount = monthlyPayments
+        .filter(p => p.status === 'paid')
+        .reduce((sum, p) => sum + (p.amount || 0), 0)
+      
+      // Coin orqali to'lovlar
+      const coinPayments = monthlyPayments.filter(p => p.paymentMethod === 'coins')
+      const totalCoinsUsed = coinPayments.reduce((sum, p) => sum + (p.coinsUsed || 0), 0)
+      
+      // Eng ko'p to'lov qilgan o'quvchilar
+      const studentPayments = {}
+      paymentTransactions
+        .filter(t => t.type === 'payment' && t.amount < 0)
+        .forEach(t => {
+          if (!studentPayments[t.studentId]) {
+            studentPayments[t.studentId] = 0
+          }
+          studentPayments[t.studentId] += Math.abs(t.amount)
+        })
+      
+      const topPayers = Object.entries(studentPayments)
+        .map(([studentId, amount]) => {
+          const student = students.find(s => s.id === studentId)
+          return {
+            studentId,
+            studentName: student ? student.name : 'Noma\'lum',
+            totalPaid: amount
+          }
+        })
+        .sort((a, b) => b.totalPaid - a.totalPaid)
+        .slice(0, 10)
+      
+      return {
+        overview: {
+          totalPayments: monthlyPayments.length,
+          paidPayments: monthlyPayments.filter(p => p.status === 'paid').length,
+          pendingPayments: monthlyPayments.filter(p => p.status === 'pending').length,
+          partialPayments: monthlyPayments.filter(p => p.status === 'partial').length,
+          totalAmount: totalPaymentAmount,
+          paidAmount: paidPaymentAmount,
+          collectionRate: totalPaymentAmount > 0 ? Math.round((paidPaymentAmount / totalPaymentAmount) * 100) : 0
+        },
+        currentMonth: {
+          totalPayments: currentMonthPayments.length,
+          paidPayments: currentMonthPayments.filter(p => p.status === 'paid').length,
+          totalAmount: currentMonthPayments.reduce((sum, p) => sum + (p.amount || 0), 0),
+          paidAmount: currentMonthPayments
+            .filter(p => p.status === 'paid')
+            .reduce((sum, p) => sum + (p.amount || 0), 0)
+        },
+        coinPayments: {
+          totalCoinPayments: coinPayments.length,
+          totalCoinsUsed,
+          coinPaymentRate: monthlyPayments.length > 0 ? Math.round((coinPayments.length / monthlyPayments.length) * 100) : 0
+        },
+        topPayers
+      }
+    } catch (error) {
+      console.error("To'lov statistikasi olishda xatolik:", error)
+      throw error
+    }
+  }
+
+  // Chat xabar yuborish
+  async sendChatMessage(studentId, message, imageUrl = null) {
+    try {
+      const users = await this.getArrayData("users")
+      const user = users.find(u => u.id === studentId)
+
+      const chatMessage = {
+        studentId,
+        studentName: user ? user.name : "Noma'lum",
+        message,
+        imageUrl,
+        timestamp: new Date().toISOString(),
+      }
+
+      await this.addToArray("chatMessages", chatMessage)
+      return true
+    } catch (error) {
+      console.error("Chat xabar yuborishda xatolik:", error)
       throw error
     }
   }
@@ -556,6 +1488,10 @@ class FirebaseManager {
   // Bildirishnoma yuborish
   async sendNotification(userIds, notification) {
     try {
+      if (!Array.isArray(userIds)) {
+        userIds = [userIds]
+      }
+      
       const notifications = []
       userIds.forEach((userId) => {
         notifications.push({
@@ -563,6 +1499,7 @@ class FirebaseManager {
           type: notification.type,
           title: notification.title,
           message: notification.message,
+          priority: notification.priority || 'normal', // 'high', 'normal', 'low'
           timestamp: new Date().toISOString(),
           read: false,
         })
@@ -576,21 +1513,30 @@ class FirebaseManager {
     }
   }
 
+  // Bildirishnomalarni o'qilgan deb belgilash
+  async markNotificationAsRead(notificationId) {
+    try {
+      await this.updateInArray("notifications", notificationId, {
+        read: true,
+        readAt: new Date().toISOString(),
+      })
+    } catch (error) {
+      console.error("Bildirishnomani o'qilgan deb belgilashda xatolik:", error)
+    }
+  }
+
   // Ulanish holatini yangilash
   updateConnectionStatus() {
     const indicator = document.getElementById("connectionIndicator")
     const text = document.getElementById("connectionText")
-    const dataSource = document.getElementById("dataSource")
 
     if (indicator && text) {
       if (this.isOnline) {
-        indicator.className = "w-3 h-3 rounded-full bg-green-400"
+        indicator.className = "w-2 h-2 rounded-full bg-green-400"
         text.textContent = "Online"
-        if (dataSource) dataSource.textContent = "Ma'lumotlar: Firebase"
       } else {
-        indicator.className = "w-3 h-3 rounded-full bg-red-400"
+        indicator.className = "w-2 h-2 rounded-full bg-red-400"
         text.textContent = "Offline"
-        if (dataSource) dataSource.textContent = "Ma'lumotlar: Cache"
       }
     }
   }
@@ -598,41 +1544,6 @@ class FirebaseManager {
   // Firebase holatini tekshirish
   getConnectionStatus() {
     return this.isOnline
-  }
-
-  // Ma'lumotlar bazasini eksport qilish
-  async exportDatabase() {
-    try {
-      const collections = [
-        "users",
-        "tasks",
-        "tests",
-        "projects",
-        "submissions",
-        "testResults",
-        "projectSubmissions",
-        "withdrawalRequests",
-        "paymentTransactions",
-        "attendanceRecords",
-        "chatMessages",
-        "notifications",
-        "userActivity",
-        "referrals",
-        "monthlyPayments",
-        "paymentRequests",
-        "groups",
-      ]
-
-      const exportData = {}
-      for (const collection of collections) {
-        exportData[collection] = await this.getArrayData(collection)
-      }
-
-      return exportData
-    } catch (error) {
-      console.error("Eksport xatoligi:", error)
-      throw error
-    }
   }
 }
 
