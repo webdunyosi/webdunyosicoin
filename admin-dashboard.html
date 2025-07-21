@@ -48,6 +48,12 @@
             background-size: 200% 100%;
             animation: loading 1.5s infinite;
         }
+        .skeleton-card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 1rem;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+        }
         @keyframes loading {
             0% { background-position: 200% 0; }
             100% { background-position: -200% 0; }
@@ -316,11 +322,35 @@
                             </button>
                         </div>
                     </div>
-                    <div id="studentsList" class="space-y-3">
+                    <div id="studentsList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         <!-- Students will be loaded here -->
-                        <div class="skeleton h-16 rounded-xl"></div>
-                        <div class="skeleton h-16 rounded-xl"></div>
-                        <div class="skeleton h-16 rounded-xl"></div>
+                        <div class="skeleton-card">
+                            <div class="flex items-center space-x-4 p-4">
+                                <div class="skeleton w-12 h-12 rounded-full"></div>
+                                <div class="flex-1">
+                                    <div class="skeleton h-4 rounded w-3/4 mb-2"></div>
+                                    <div class="skeleton h-3 rounded w-1/2"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="skeleton-card">
+                            <div class="flex items-center space-x-4 p-4">
+                                <div class="skeleton w-12 h-12 rounded-full"></div>
+                                <div class="flex-1">
+                                    <div class="skeleton h-4 rounded w-3/4 mb-2"></div>
+                                    <div class="skeleton h-3 rounded w-1/2"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="skeleton-card">
+                            <div class="flex items-center space-x-4 p-4">
+                                <div class="skeleton w-12 h-12 rounded-full"></div>
+                                <div class="flex-1">
+                                    <div class="skeleton h-4 rounded w-3/4 mb-2"></div>
+                                    <div class="skeleton h-3 rounded w-1/2"></div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

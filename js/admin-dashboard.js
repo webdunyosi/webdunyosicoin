@@ -234,11 +234,44 @@ function loadStudents() {
     populateCoinSelects()
     
     // Display students
+    // Skeleton loader ni ko'rsatish
+    const studentsList2 = document.getElementById("studentsList")
+    studentsList2.innerHTML = `
+      <div class="skeleton-card">
+        <div class="flex items-center space-x-4 p-4">
+          <div class="skeleton w-12 h-12 rounded-full"></div>
+          <div class="flex-1">
+            <div class="skeleton h-4 rounded w-3/4 mb-2"></div>
+            <div class="skeleton h-3 rounded w-1/2"></div>
+          </div>
+        </div>
+      </div>
+      <div class="skeleton-card">
+        <div class="flex items-center space-x-4 p-4">
+          <div class="skeleton w-12 h-12 rounded-full"></div>
+          <div class="flex-1">
+            <div class="skeleton h-4 rounded w-3/4 mb-2"></div>
+            <div class="skeleton h-3 rounded w-1/2"></div>
+          </div>
+        </div>
+      </div>
+      <div class="skeleton-card">
+        <div class="flex items-center space-x-4 p-4">
+          <div class="skeleton w-12 h-12 rounded-full"></div>
+          <div class="flex-1">
+            <div class="skeleton h-4 rounded w-3/4 mb-2"></div>
+            <div class="skeleton h-3 rounded w-1/2"></div>
+          </div>
+        </div>
+      </div>
+    `
+
     displayStudents(allStudents)
 }
 
 // Display students
 function displayStudents(students) {
+    // Ma'lumotlar yuklangandan keyin skeleton loader ni olib tashlash
     const studentsList = document.getElementById('studentsList')
     
     if (students.length === 0) {
@@ -273,11 +306,12 @@ function displayStudents(students) {
                                 <div class="font-bold text-purple-600">${(student.rating || 0).toLocaleString()}</div>
                                 <div class="text-gray-500">Coin</div>
                             </div>
-                            ${paymentStatus}
                         </div>
-                        <button onclick="showEditStudentModal('${student.id}')" class="bg-blue-600 text-white px-3 py-1 text-sm rounded-lg hover:bg-blue-700 transition-colors duration-200">
-                            <i class="fas fa-edit mr-1"></i>Tahrirlash
-                        </button>
+                        <div class="flex items-center space-x-2">
+                            <button onclick="showEditStudentModal('${student.id}')" class="text-blue-600 hover:text-blue-800 p-1">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -285,24 +319,16 @@ function displayStudents(students) {
     }).join('')
 }
 
-// Get payment status badge
-function getPaymentStatusBadge(status) {
-    const badges = {
-        paid: '<span class="bg-green-100 text-green-800 px-2 py-1 rounded-full text-xs font-medium">To\'langan</span>',
-        unpaid: '<span class="bg-red-100 text-red-800 px-2 py-1 rounded-full text-xs font-medium">To\'lanmagan</span>',
-        partial: '<span class="bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-xs font-medium">Qisman</span>'
-    }
-    return badges[status] || badges.unpaid
-}
-
 // Filter students
 function filterStudents() {
     const searchTerm = document.getElementById('studentSearch').value.toLowerCase()
     const selectedGroup = document.getElementById('groupFilter').value
     
-    let filteredStudents = allStudents.filter(student => {
-        const matchesSearch = student.name.toLowerCase().includes(searchTerm) || 
-                            student.email.toLowerCase().includes(searchTerm)
+    const filteredStudents = allStudents.filter(student => {
+        const matchesSearch = student.name.toLowerCase().includes(searchTerm) ||
+                            student.email.toLowerCase().includes(searchTerm) ||
+                            student.telegram.toLowerCase().includes(searchTerm)
+        
         const matchesGroup = !selectedGroup || student.groupId === selectedGroup
         
         return matchesSearch && matchesGroup
@@ -858,6 +884,16 @@ function getSubmissionStatusBadge(status) {
     return badges[status] || badges.pending
 }
 
+// Get payment status badge
+function getPaymentStatusBadge(status) {
+    const badges = {
+        paid: '<span class="bg-green-100 text-green-800 px-2 py-1 rounded-full text-xs font-medium">To\'langan</span>',
+        partial: '<span class="bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-xs font-medium">Qisman</span>',
+        unpaid: '<span class="bg-red-100 text-red-800 px-2 py-1 rounded-full text-xs font-medium">To\'lanmagan</span>'
+    }
+    return badges[status] || badges.unpaid
+}
+
 // Grade submission
 async function gradeSubmission(submissionId) {
     try {
@@ -925,7 +961,7 @@ function closeCreateTaskModal() {
     document.getElementById('taskTitle').value = ''
     document.getElementById('taskDescription').value = ''
     document.getElementById('taskDeadline').value = ''
-    document.getElementById('taskReward').value = '50'
+    document.getElementById('taskReward').value = '500'
     document.getElementById('taskWebsiteUrl').value = ''
     document.querySelectorAll('input[name="assignmentType"]')[0].checked = true
     handleAssignmentTypeChange()
@@ -1083,6 +1119,59 @@ function closeCreateTestModal() {
     // Reset form
     document.getElementById('testTitle').value = ''
     document.getElementById('testDescription').value = ''
+}
+
+// Add question function
+function addQuestion() {
+    const container = document.getElementById('questionsContainer')
+    const questionIndex = container.children.length + 1
+    
+    const questionDiv = document.createElement('div')
+    questionDiv.className = 'border border-gray-200 rounded-xl p-6 question-item bg-gray-50'
+    questionDiv.innerHTML = `
+        <div class="flex justify-between items-center mb-4">
+            <h5 class="font-semibold text-gray-900 text-lg">Savol ${questionIndex}</h5>
+            <button type="button" onclick="removeQuestion(this)" class="text-red-500 hover:text-red-700 p-2 hover:bg-red-50 rounded-lg transition-colors">
+                <i class="fas fa-trash text-lg"></i>
+            </button>
+        </div>
+        <div class="space-y-4">
+            <div>
+                <input type="text" placeholder="Savol matni" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent question-text bg-white" required>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <input type="text" placeholder="Variant A" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent option-a bg-white" required>
+                </div>
+                <div>
+                    <input type="text" placeholder="Variant B" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent option-b bg-white" required>
+                </div>
+                <div>
+                    <input type="text" placeholder="Variant C" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent option-c bg-white" required>
+                </div>
+                <div>
+                    <input type="text" placeholder="Variant D" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent option-d bg-white" required>
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-3">To'g'ri javob:</label>
+                <select class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent correct-answer bg-white" required>
+                    <option value="" class="text-gray-400">Tanlang...</option>
+                    <option value="A">Variant A</option>
+                    <option value="B">Variant B</option>
+                    <option value="C">Variant C</option>
+                    <option value="D">Variant D</option>
+                </select>
+            </div>
+        </div>
+    `
+    
+    container.appendChild(questionDiv)
+}
+
+// Remove question function
+function removeQuestion(button) {
+    button.closest('.question-item').remove()
 }
 
 // Create test
@@ -1900,6 +1989,8 @@ window.createTask = createTask
 window.deleteTest = deleteTest
 window.showCreateTestModal = showCreateTestModal
 window.closeCreateTestModal = closeCreateTestModal
+window.addQuestion = addQuestion
+window.removeQuestion = removeQuestion
 window.createTest = createTest
 window.deleteProject = deleteProject
 window.showProjectSubmissions = showProjectSubmissions
